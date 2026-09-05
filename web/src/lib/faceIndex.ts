@@ -24,9 +24,11 @@ let loading: Promise<{ index: FaceIndex; source: string } | null> | null = null;
 
 function indexUrls() {
   const base = photosBaseUrl();
-  // ?v= bust CDN/browser cache quando o índice muda (jsDelivr @main é agressivo)
+  // ?v= evita cache stale no browser
   const q = `?v=${FACE_CACHE_VERSION}`;
-  return [base ? `${base}/faces.json${q}` : null, `/photos/faces.json${q}`].filter(
+  // 1) Site (Netlify) — índice novo a cada deploy
+  // 2) CDN fotos — fallback (jsDelivr @main atrasa/ gruda versão velha)
+  return [`/photos/faces.json${q}`, base ? `${base}/faces.json${q}` : null].filter(
     Boolean,
   ) as string[];
 }
