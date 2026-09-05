@@ -1,14 +1,12 @@
 # App Next.js em /web
 #
-# Painel Netlify (Site configuration → Build & deploy → Build settings):
-#   Base directory:     web
-#   Build command:      npm run build   (ou deixe vazio p/ usar este arquivo)
-#   Publish directory:  DEIXE VAZIO     (não use out, dist, public nem .next)
-# Depois: Deploys → Trigger deploy → Clear cache and deploy site
+# Painel: Base = web | Build = npm run build | Publish = .next
+# (Publish NÃO pode ser "web" nem vazio quando a UI força publish=web)
 #
 [build]
   base = "web"
   command = "npm run build"
+  publish = ".next"
 
 [build.environment]
   NODE_VERSION = "22"
