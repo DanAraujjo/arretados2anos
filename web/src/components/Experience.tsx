@@ -21,7 +21,11 @@ import {
   putPhotoFaces,
   saveMatchSession,
 } from "@/lib/faceCache";
-import { hydrateFaceIndexFromCdn } from "@/lib/faceIndex";
+import {
+  loadFaceIndex,
+  matchQueryAgainstIndex,
+  prefetchFaceIndex,
+} from "@/lib/faceIndex";
 import { mapPool } from "@/lib/pool";
 import type { AppStep, MatchResult, PhotoItem } from "@/lib/types";
 import { renderAnniversaryVideo } from "@/lib/video";
@@ -86,12 +90,8 @@ export function Experience({ initialPhotos, photoHint }: Props) {
         const session = await peekMatchSession(key);
         if (!cancelled) setSavedSession(session);
 
-        // Pré-aquece cache a partir do faces.json (CDN) — torna o 1º scan rápido
-        void hydrateFaceIndexFromCdn().then((result) => {
-          if (!cancelled && result.loaded > 0) {
-            setScanLabel(`Índice pronto · ${result.loaded} fotos`);
-          }
-        });
+        // Pré-baixa faces.json enquanto o usuário tira a selfie
+        prefetchFaceIndex();
       } catch {
         if (!cancelled) setHint("Não consegui listar as fotos do álbum.");
       } finally {
@@ -255,6 +255,7 @@ export function Experience({ initialPhotos, photoHint }: Props) {
     setScanProgress(0);
     setMatches([]);
     setCacheHits(0);
+    const started = performance.now();
 
     try {
       if (photos.length === 0) {
@@ -264,66 +265,87 @@ export function Experience({ initialPhotos, photoHint }: Props) {
         );
       }
 
-      setScanLabel("Preparando índice...");
-      const hydrated = await hydrateFaceIndexFromCdn();
-      if (hydrated.loaded > 0) {
-        setScanLabel(`Índice CDN · ${hydrated.loaded} fotos`);
-      }
+      setScanLabel("Carregando índice facial...");
+      setScanProgress(0.05);
 
-      const selfie = await loadImage(url);
+      // Paraleliza: selfie + faces.json
+      const [selfie, faceIndex] = await Promise.all([
+        loadImage(url),
+        loadFaceIndex(),
+      ]);
+      setScanProgress(0.15);
+      setScanLabel("Lendo seu rosto...");
+
       const query = await getPrimaryDescriptor(selfie);
       if (!query) {
         throw new Error("Não achei um rosto nítido na selfie. Tente de novo com mais luz.");
       }
+      setScanProgress(0.25);
 
-      // Downloads em paralelo; detecção limitada (WebGL não escala bem)
-      const cores = typeof navigator !== "undefined" ? navigator.hardwareConcurrency || 4 : 4;
-      const concurrency = Math.min(4, Math.max(2, Math.floor(cores / 2)));
-
+      let found: MatchResult[] = [];
       let hits = 0;
-      const rows = await mapPool(
-        photos,
-        concurrency,
-        async (photo) => {
-          try {
-            let faces = await getPhotoFaces(photo.id);
-            if (faces) {
-              hits += 1;
-              setCacheHits(hits);
-              setScanLabel(`Cache · ${photo.name}`);
-            } else {
-              setScanLabel(`Analisando · ${photo.name}`);
-              const img = await loadImage(photo.src);
-              faces = await getAlbumFaces(img);
-              await putPhotoFaces(photo.id, faces);
-            }
 
-            if (faces.length === 0) return null;
-            const best = bestFaceMatch(query, faces);
-            if (
-              best &&
-              Number.isFinite(best.distance) &&
-              isMatch(best.distance, best.face, best.secondDistance)
-            ) {
-              return {
-                photo,
-                distance: best.distance,
-                score: distanceToScore(best.distance),
-                face: best.face,
-              } satisfies MatchResult;
-            }
-            return null;
-          } catch {
-            return null;
-          }
-        },
-        (done, total) => {
-          setScanProgress(done / total);
-        },
-      );
+      if (faceIndex && faceIndex.count > 0) {
+        // Caminho rápido online: só compara vetores (~1s), sem baixar 400MB
+        setScanLabel(`Comparando · ${faceIndex.count} fotos`);
+        found = matchQueryAgainstIndex(query, photos, faceIndex.index, (done, total) => {
+          setScanProgress(0.25 + (done / total) * 0.7);
+          if (done % 50 === 0) setScanLabel(`Comparando · ${done}/${total}`);
+        });
+        hits = faceIndex.count;
+        setCacheHits(hits);
+      } else {
+        // Fallback local (sem faces.json): paralelo, mas bem mais lento
+        setScanLabel("Índice ausente · analisando fotos...");
+        const cores = typeof navigator !== "undefined" ? navigator.hardwareConcurrency || 4 : 4;
+        const concurrency = Math.min(6, Math.max(3, Math.floor(cores / 2)));
 
-      const found = rows.filter((row): row is MatchResult => row !== null);
-      found.sort((a, b) => a.distance - b.distance);
+        const rows = await mapPool(
+          photos,
+          concurrency,
+          async (photo) => {
+            try {
+              let faces = await getPhotoFaces(photo.id);
+              if (faces) {
+                hits += 1;
+                setCacheHits(hits);
+              } else {
+                const img = await loadImage(photo.src);
+                faces = await getAlbumFaces(img);
+                await putPhotoFaces(photo.id, faces);
+              }
+              if (faces.length === 0) return null;
+              const best = bestFaceMatch(query, faces);
+              if (
+                best &&
+                Number.isFinite(best.distance) &&
+                isMatch(best.distance, best.face, best.secondDistance)
+              ) {
+                return {
+                  photo,
+                  distance: best.distance,
+                  score: distanceToScore(best.distance),
+                  face: best.face,
+                } satisfies MatchResult;
+              }
+              return null;
+            } catch {
+              return null;
+            }
+          },
+          (done, total) => {
+            setScanProgress(0.25 + (done / total) * 0.7);
+            setScanLabel(`Analisando · ${done}/${total}`);
+          },
+        );
+        found = rows.filter((row): row is MatchResult => row !== null);
+        found.sort((a, b) => a.distance - b.distance);
+      }
+
+      setScanProgress(0.98);
+      const elapsed = ((performance.now() - started) / 1000).toFixed(1);
+      setScanLabel(`Pronto em ${elapsed}s`);
+
       const nextSelected = found.slice(0, 24).map((m) => m.photo.id);
       setMatches(found);
       setSelectedIds(nextSelected);

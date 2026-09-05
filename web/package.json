@@ -20,8 +20,11 @@
     "react-dom": "19.2.8"
   },
   "devDependencies": {
+    "@napi-rs/canvas": "^1.0.8",
     "@netlify/plugin-nextjs": "^5.15.13",
     "@tailwindcss/postcss": "^4",
+    "@tensorflow/tfjs": "^4.22.0",
+    "@tensorflow/tfjs-backend-wasm": "^4.22.0",
     "@types/archiver": "^8.0.0",
     "@types/node": "^20",
     "@types/react": "^19",

@@ -59,34 +59,27 @@ function averageDescriptors(list: Float32Array[]) {
   return out;
 }
 
-/** Selfie: prioriza SSD; se os dois baterem, faz média. */
+/** Selfie: SSD rápido (um detector) — scan total mira ≤10s online com faces.json. */
 export async function getPrimaryDescriptor(
   input: HTMLImageElement | HTMLVideoElement | HTMLCanvasElement,
 ) {
   const fa = await api();
   await loadFaceModels();
 
-  const [ssd, tiny] = await Promise.all([
-    fa
-      .detectSingleFace(input, new fa.SsdMobilenetv1Options({ minConfidence: 0.45 }))
-      .withFaceLandmarks()
-      .withFaceDescriptor(),
-    fa
-      .detectSingleFace(
-        input,
-        new fa.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.4 }),
-      )
-      .withFaceLandmarks()
-      .withFaceDescriptor(),
-  ]);
+  const ssd = await fa
+    .detectSingleFace(input, new fa.SsdMobilenetv1Options({ minConfidence: 0.4 }))
+    .withFaceLandmarks()
+    .withFaceDescriptor();
+  if (ssd?.descriptor) return ssd.descriptor;
 
-  if (ssd?.descriptor && tiny?.descriptor) {
-    const gap = euclideanDistance(ssd.descriptor, tiny.descriptor);
-    // Se Tiny e SSD discordam demais, fica só com SSD (mais estável).
-    if (gap < 0.35) return averageDescriptors([ssd.descriptor, tiny.descriptor]);
-    return ssd.descriptor;
-  }
-  return ssd?.descriptor ?? tiny?.descriptor ?? null;
+  const tiny = await fa
+    .detectSingleFace(
+      input,
+      new fa.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.4 }),
+    )
+    .withFaceLandmarks()
+    .withFaceDescriptor();
+  return tiny?.descriptor ?? null;
 }
 
 export type DetectedFace = {

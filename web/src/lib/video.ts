@@ -713,11 +713,10 @@ function drawCollageMural(
 
   const group = shot.clips.slice(0, 4);
   const slots = collageSlots(group.length, shot.layoutVariant);
-  // Entrada escalonada + saída individual (ritmo de Reels)
-  const enterWindow = 0.32;
-  const exitStart = 0.82;
-  const stagger = group.length <= 2 ? 0.08 : 0.055;
-  const appearDur = 0.18;
+  // Só entra uma vez — saída fica a cargo da transição entre slides
+  const enterWindow = 0.28;
+  const stagger = group.length <= 2 ? 0.07 : 0.05;
+  const appearDur = 0.16;
 
   for (let i = 0; i < group.length; i += 1) {
     const slot = slots[i];
@@ -732,34 +731,24 @@ function drawCollageMural(
     const y = slot.cy * height - h / 2;
 
     const enter = easeOutCubic(clamp((t / enterWindow - i * stagger) / appearDur, 0, 1));
-    // Saída em ordem inversa (última foto sai primeiro) — movimento contínuo
-    const exitOrder = group.length - 1 - i;
-    let appear = enter;
-    if (t > exitStart) {
-      const leave = easeInOutCubic(
-        clamp((t - exitStart) / (1 - exitStart) - exitOrder * 0.04, 0, 1),
-      );
-      appear *= 1 - leave;
-    }
-    if (appear <= 0.01) continue;
+    if (enter <= 0.01) continue;
 
     const dir = i % 2 === 0 ? 1 : -1;
-    const fromX = (i % 2 === 0 ? -1 : 1) * width * 0.16;
-    const fromY = (i < group.length / 2 ? -1 : 1) * height * 0.1;
+    const fromX = (i % 2 === 0 ? -1 : 1) * width * 0.14;
+    const fromY = (i < group.length / 2 ? -1 : 1) * height * 0.09;
     const slideIn = 1 - enter;
     const driftX = Math.sin((t * 1.2 + i * 0.45) * Math.PI) * width * 0.005;
     const driftY = Math.cos((t * 1.15 + i * 0.37) * Math.PI) * height * 0.004;
-    const exitPush = t > exitStart ? (t - exitStart) / (1 - exitStart) : 0;
 
     drawPinnedPhoto(
       ctx,
       clip,
-      x + fromX * slideIn + driftX + dir * exitPush * width * 0.06,
-      y + fromY * slideIn + driftY + (i < 2 ? -1 : 1) * exitPush * height * 0.05,
+      x + fromX * slideIn + driftX,
+      y + fromY * slideIn + driftY,
       w,
       h,
-      slot.rot + dir * t * 1.2 + exitPush * dir * 6,
-      appear,
+      slot.rot + dir * t * 1.1,
+      enter,
       t,
       motion,
       dir,
@@ -1145,14 +1134,17 @@ export async function renderAnniversaryVideo({
     const shot = shots[s];
     const next = shots[s + 1];
     const slideFrames = slideFrameCounts[s];
-    // Transição ~0.55s, conectando movimento (não “slide de PowerPoint”)
     const transitionFrames = next
       ? Math.min(Math.round(fps * 0.55), Math.max(8, Math.floor(slideFrames * 0.2)))
       : 0;
     const bodyFramesShot = next ? slideFrames - transitionFrames : slideFrames;
+    // Depois da transição o próximo slide já entrou — não reinicia enter (t≥0.4)
+    const enteredT = 0.4;
+    const tStart = s === 0 ? 0 : enteredT;
 
     for (let i = 0; i < bodyFramesShot; i += 1) {
-      const t = i / (bodyFramesShot - 1 || 1);
+      const u = i / (bodyFramesShot - 1 || 1);
+      const t = tStart + (1 - tStart) * u;
       ctx.fillStyle = "#050f28";
       ctx.fillRect(0, 0, width, height);
       drawShotContent(ctx, shot, t, width, height, courtLayer);
@@ -1167,6 +1159,8 @@ export async function renderAnniversaryVideo({
       for (let i = 0; i < transitionFrames; i += 1) {
         const tp = i / (transitionFrames - 1 || 1);
         const e = easeInOutCubic(tp);
+        // Próximo mural já “cheio” — só revela via transição, sem re-entrar pins
+        const nextT = enteredT;
         ctx.fillStyle = "#050f28";
         ctx.fillRect(0, 0, width, height);
 
@@ -1177,7 +1171,7 @@ export async function renderAnniversaryVideo({
           ctx.save();
           if (vertical) ctx.translate(0, travel * (1 - e));
           else ctx.translate(travel * (1 - e), 0);
-          drawShotContent(ctx, next, clamp(0.05 + tp * 0.4, 0.02, 0.45), width, height, courtLayer);
+          drawShotContent(ctx, next, nextT, width, height, courtLayer);
           drawVignette(ctx, width, height);
           drawChrome(ctx, width, height, logo);
           ctx.restore();
@@ -1196,12 +1190,11 @@ export async function renderAnniversaryVideo({
           ctx.translate(width / 2, height / 2);
           ctx.scale(inScale, inScale);
           ctx.translate(-width / 2, -height / 2);
-          drawShotContent(ctx, next, clamp(0.05 + tp * 0.4, 0.02, 0.45), width, height, courtLayer);
+          drawShotContent(ctx, next, nextT, width, height, courtLayer);
           drawVignette(ctx, width, height);
           drawChrome(ctx, width, height, logo);
           ctx.restore();
         } else if (shot.transition === "crossBlur") {
-          // “Blur” barato: smears do snapshot + fade do próximo
           ctx.save();
           ctx.globalAlpha = 1 - e;
           ctx.drawImage(snap, 0, 0);
@@ -1214,7 +1207,7 @@ export async function renderAnniversaryVideo({
           ctx.restore();
           ctx.save();
           ctx.globalAlpha = e;
-          drawShotContent(ctx, next, clamp(0.05 + tp * 0.4, 0.02, 0.45), width, height, courtLayer);
+          drawShotContent(ctx, next, nextT, width, height, courtLayer);
           drawVignette(ctx, width, height);
           drawChrome(ctx, width, height, logo);
           ctx.restore();
@@ -1222,7 +1215,7 @@ export async function renderAnniversaryVideo({
           ctx.drawImage(snap, 0, 0);
           ctx.save();
           ctx.globalAlpha = easeInOut(tp);
-          drawShotContent(ctx, next, clamp(0.05 + tp * 0.4, 0.02, 0.45), width, height, courtLayer);
+          drawShotContent(ctx, next, nextT, width, height, courtLayer);
           drawVignette(ctx, width, height);
           drawChrome(ctx, width, height, logo);
           ctx.restore();
