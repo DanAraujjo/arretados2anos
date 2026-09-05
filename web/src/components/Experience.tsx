@@ -26,8 +26,9 @@ import {
   matchQueryAgainstIndex,
   prefetchFaceIndex,
 } from "@/lib/faceIndex";
-import { loadArcFace } from "@/lib/arcface";
+import { loadArcFace, onArcFaceProgress } from "@/lib/arcface";
 import { dropBurstDuplicates } from "@/lib/bursts";
+import { unlockAudio } from "@/lib/encode";
 import { mapPool } from "@/lib/pool";
 import { zipPhotos } from "@/lib/zip";
 import type { AppStep, MatchResult, PhotoItem } from "@/lib/types";
@@ -223,13 +224,26 @@ export function Experience({ initialPhotos, photoHint }: Props) {
       setScanLabel("Carregando reconhecimento...");
       setScanProgress(0.05);
 
+      // O modelo tem 3.5MB e o runtime 13MB: sem barra andando isso parecia
+      // travamento logo depois de detectar o rosto.
+      const stopWatching = onArcFaceProgress((ratio) => {
+        setScanProgress(0.05 + ratio * 0.1);
+        if (ratio < 1) setScanLabel(`Carregando reconhecimento · ${Math.round(ratio * 100)}%`);
+      });
+
       // Paraleliza selfie + índice + modelo. O ArcFace tem ~12MB: no 4G isso
       // demora, e sem rótulo próprio parecia que o app tinha travado.
-      const [selfie, faceIndex] = await Promise.all([
-        loadImage(url),
-        loadFaceIndex(),
-        loadArcFace(),
-      ]);
+      let selfie: HTMLImageElement;
+      let faceIndex: Awaited<ReturnType<typeof loadFaceIndex>>;
+      try {
+        [selfie, faceIndex] = await Promise.all([
+          loadImage(url),
+          loadFaceIndex(),
+          loadArcFace(),
+        ]);
+      } finally {
+        stopWatching();
+      }
       setScanProgress(0.15);
       setScanLabel("Lendo seu rosto...");
 
@@ -525,6 +539,8 @@ export function Experience({ initialPhotos, photoHint }: Props) {
   }
 
   async function makeVideo() {
+    // Antes de qualquer await: no iOS o áudio só libera dentro do gesto.
+    unlockAudio();
     setError(null);
     setStep("rendering");
     setRenderProgress(0);
@@ -591,6 +607,61 @@ export function Experience({ initialPhotos, photoHint }: Props) {
       setStep("results");
     }
   }
+
+  /**
+   * Ações da tela de resultados. No celular elas vão **abaixo** da grade, em
+   * duas linhas — no topo elas empurravam as fotos pra fora da tela.
+   */
+  const resultActions = (
+    <>
+      <button
+        type="button"
+        className="btn-primary col-span-3 w-full sm:w-auto"
+        disabled={matches.length > 0 && selectedIds.length === 0}
+        onClick={() => void makeVideo()}
+      >
+        Vídeo com Fotos
+      </button>
+      {matches.length > 0 && (
+        <button
+          type="button"
+          className="btn-ghost w-full sm:w-auto"
+          disabled={zipping || selectedIds.length === 0}
+          onClick={() => void downloadZip()}
+        >
+          {zipping ? `ZIP ${zipLabel}` : "Baixar ZIP"}
+        </button>
+      )}
+      {matches.length > 0 && (
+        <button
+          type="button"
+          className="btn-ghost w-full sm:w-auto"
+          onClick={() =>
+            setSelectedIds((current) => {
+              const next =
+                current.length === matches.length
+                  ? []
+                  : matches.map((m) => m.photo.id);
+              void persistSelection(next);
+              return next;
+            })
+          }
+        >
+          {selectedIds.length === matches.length ? "Limpar" : "Todas"}
+        </button>
+      )}
+      <button
+        type="button"
+        className={`btn-ghost w-full sm:w-auto ${matches.length === 0 ? "col-span-3" : ""}`}
+        onClick={() => {
+          setStep("capture");
+          void startCamera();
+        }}
+      >
+        Nova selfie
+      </button>
+    </>
+  );
 
   return (
     <div className="relative flex h-dvh max-h-dvh flex-col overflow-hidden bg-navy text-foam">
@@ -784,53 +855,8 @@ export function Experience({ initialPhotos, photoHint }: Props) {
                     : "Tente outra selfie"}
                 </p>
               </div>
-              <div className="grid grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap sm:justify-end">
-                <button
-                  type="button"
-                  className="btn-primary col-span-2 w-full sm:w-auto"
-                  disabled={matches.length > 0 && selectedIds.length === 0}
-                  onClick={() => void makeVideo()}
-                >
-                  Vídeo com Fotos
-                </button>
-                {matches.length > 0 && (
-                  <button
-                    type="button"
-                    className="btn-ghost w-full sm:w-auto"
-                    disabled={zipping || selectedIds.length === 0}
-                    onClick={() => void downloadZip()}
-                  >
-                    {zipping ? `Gerando ZIP ${zipLabel}` : "Baixar ZIP"}
-                  </button>
-                )}
-                {matches.length > 0 && (
-                  <button
-                    type="button"
-                    className="btn-ghost w-full sm:w-auto"
-                    onClick={() =>
-                      setSelectedIds((current) => {
-                        const next =
-                          current.length === matches.length
-                            ? []
-                            : matches.map((m) => m.photo.id);
-                        void persistSelection(next);
-                        return next;
-                      })
-                    }
-                  >
-                    {selectedIds.length === matches.length ? "Limpar" : "Todas"}
-                  </button>
-                )}
-                <button
-                  type="button"
-                  className={`btn-ghost w-full sm:w-auto ${matches.length === 0 ? "col-span-2" : ""}`}
-                  onClick={() => {
-                    setStep("capture");
-                    void startCamera();
-                  }}
-                >
-                  Nova selfie
-                </button>
+              <div className="hidden sm:flex sm:w-auto sm:flex-wrap sm:justify-end sm:gap-2">
+                {resultActions}
               </div>
             </div>
 
@@ -897,6 +923,10 @@ export function Experience({ initialPhotos, photoHint }: Props) {
                 </div>
               </div>
             )}
+
+            <div className="grid shrink-0 grid-cols-3 gap-2 pt-3 sm:hidden">
+              {resultActions}
+            </div>
           </section>
         )}
 

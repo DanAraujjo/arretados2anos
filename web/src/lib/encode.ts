@@ -44,6 +44,38 @@ const AUDIO_CHUNK_FRAMES = 1024;
 /** Sobreposição entre repetições da trilha, pra emenda não estalar. */
 const LOOP_CROSSFADE_SEC = 1.5;
 
+let sharedAudioContext: AudioContext | null = null;
+
+/**
+ * AudioContext único do app.
+ *
+ * No iOS o contexto só sai de "suspended" se for destravado dentro do gesto do
+ * usuário — e a montagem do vídeo tem downloads antes de chegar no áudio, o que
+ * já quebrou a cadeia do gesto. Por isso ele nasce e é destravado no clique
+ * (`unlockAudio`) e depois reaproveitado, em vez de criado tarde demais.
+ */
+export function getSharedAudioContext() {
+  if (!sharedAudioContext || sharedAudioContext.state === "closed") {
+    sharedAudioContext = new AudioContext();
+  }
+  return sharedAudioContext;
+}
+
+/** Chame **de dentro** do handler do clique, antes de qualquer await. */
+export function unlockAudio() {
+  try {
+    const ctx = getSharedAudioContext();
+    void ctx.resume();
+    // Um buffer mudo basta pro iOS considerar o contexto iniciado por gesto.
+    const source = ctx.createBufferSource();
+    source.buffer = ctx.createBuffer(1, 1, ctx.sampleRate);
+    source.connect(ctx.destination);
+    source.start(0);
+  } catch {
+    // sem áudio disponível; o render avisa depois
+  }
+}
+
 /** Cede o event loop sem o clamp de 4ms do setTimeout aninhado. */
 function makeYield() {
   if (typeof MessageChannel === "undefined") {
@@ -228,10 +260,13 @@ async function encodeAudioTrack(
   buffer: AudioBuffer,
   muxer: Muxer<ArrayBufferTarget>,
 ) {
+  // Erro de encoder chega por callback: guardar e checar depois, porque um
+  // throw aqui dentro se perde e o vídeo sairia mudo sem avisar ninguém.
+  let failure: Error | null = null;
   const encoder = new AudioEncoder({
     output: (chunk, meta) => muxer.addAudioChunk(chunk, meta),
     error: (err) => {
-      throw err;
+      failure = err instanceof Error ? err : new Error(String(err));
     },
   });
   encoder.configure({
@@ -258,6 +293,7 @@ async function encodeAudioTrack(
 
   await encoder.flush();
   encoder.close();
+  if (failure) throw failure;
 }
 
 async function createWebCodecsSink(opts: SinkOptions): Promise<FrameSink | null> {
@@ -377,8 +413,13 @@ async function createMediaRecorderSink(opts: SinkOptions): Promise<FrameSink> {
   );
   if (!mimeType) throw new Error("Seu navegador não consegue gravar vídeo.");
 
-  const audioCtx = new AudioContext();
+  const audioCtx = getSharedAudioContext();
   await audioCtx.resume();
+  if (audioCtx.state !== "running") {
+    throw new Error(
+      "O navegador bloqueou o áudio. Toque na tela e gere o vídeo de novo.",
+    );
+  }
 
   const dest = audioCtx.createMediaStreamDestination();
   const master = audioCtx.createGain();
@@ -394,7 +435,6 @@ async function createMediaRecorderSink(opts: SinkOptions): Promise<FrameSink> {
     musicSource.connect(master);
     musicSource.start(0, musicSource.loopStart);
   } catch (err) {
-    await audioCtx.close();
     throw err instanceof Error ? err : new Error("Falha na música de fundo");
   }
 
@@ -465,9 +505,7 @@ async function createMediaRecorderSink(opts: SinkOptions): Promise<FrameSink> {
       await new Promise((r) => setTimeout(r, 40));
       recorder.stop();
       cleanup();
-      const blob = await done;
-      await audioCtx.close();
-      return blob;
+      return done;
     },
     abort() {
       try {
@@ -476,7 +514,6 @@ async function createMediaRecorderSink(opts: SinkOptions): Promise<FrameSink> {
         // ignore
       }
       cleanup();
-      void audioCtx.close();
     },
   };
 }

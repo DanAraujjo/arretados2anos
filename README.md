@@ -85,8 +85,9 @@ banner "SEMPRE ARRETADOS!" até o rodapé. **A arte nunca se move** — ela é
 redesenhada sem transformação a cada frame, e só a camada de fotos participa das
 transições. Se voltar a transformar o canvas inteiro, o fundo balança junto.
 
-`OUTRO_SEC` tem que ser maior que `FADE_OUT_SEC`: com os dois iguais, o
-"OBRIGADO" nasce dentro do fade e ninguém consegue ler.
+O texto de encerramento é `OUTRO_LINES`. `OUTRO_SEC` tem que ser bem maior que
+`FADE_OUT_SEC`: com os dois próximos, a mensagem nasce dentro do fade e ninguém
+consegue ler.
 
 Boa parte do álbum é rajada de câmera (há 25 arquivos com o mesmo segundo no
 nome). No vídeo isso lê como "a mesma foto repetindo", então
@@ -109,6 +110,11 @@ npm run music:extract -- /caminho/do/video.mp4
 Usa o `afconvert` (nativo do macOS, sem ffmpeg) e grava em
 `public/music/tema.m4a`, que junto com `party.mp3` é fallback caso a faixa
 principal falte ou o navegador não decodifique.
+
+No iOS o áudio só sai se o `AudioContext` for destravado **dentro** do gesto do
+usuário. Como a montagem faz downloads antes de chegar no som, `unlockAudio()`
+roda na primeira linha do clique, antes de qualquer `await` — sem isso o vídeo
+sai mudo no iPhone.
 
 ## Colocar as fotos
 

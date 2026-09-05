@@ -24,6 +24,57 @@ const WASM_PATH = "/ort/";
 let sessionPromise: Promise<InferenceSession> | null = null;
 let alignCanvas: HTMLCanvasElement | null = null;
 
+export type ArcFaceProgress = (ratio: number) => void;
+
+const progressListeners = new Set<ArcFaceProgress>();
+
+/** Acompanha o download/preparo do modelo (0–1). Devolve o cancelamento. */
+export function onArcFaceProgress(listener: ArcFaceProgress) {
+  progressListeners.add(listener);
+  listener(lastProgress);
+  return () => progressListeners.delete(listener);
+}
+
+let lastProgress = 0;
+function report(ratio: number) {
+  lastProgress = Math.max(lastProgress, Math.min(1, ratio));
+  for (const listener of progressListeners) listener(lastProgress);
+}
+
+/**
+ * Baixa o modelo medindo o progresso.
+ *
+ * `InferenceSession.create(url)` busca o arquivo por dentro e não conta nada —
+ * no 4G isso são dezenas de segundos com a tela parada, que é o que parecia
+ * travamento. Baixando aqui dá pra mostrar a barra andando.
+ */
+async function fetchModel(): Promise<ArrayBuffer> {
+  const res = await fetch(MODEL_URL);
+  if (!res.ok) throw new Error(`modelo ${res.status}`);
+
+  const total = Number(res.headers.get("content-length") ?? 0);
+  if (!res.body || !total) return res.arrayBuffer();
+
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let loaded = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    loaded += value.byteLength;
+    report((loaded / total) * 0.9);
+  }
+
+  const bytes = new Uint8Array(loaded);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes.buffer;
+}
+
 async function createSession() {
   // Entrada só-WASM: o bundle padrão puxa o runtime jsep/WebGPU, que sozinho
   // pesa 26MB. Aqui só o WASM simples é baixado.
@@ -32,11 +83,21 @@ async function createSession() {
   // Threads exigem cross-origin isolation (COOP/COEP); uma inferência de
   // 112x112 é barata o bastante pra não precisar disso.
   ort.env.wasm.numThreads = 1;
+  /**
+   * Runtime num worker. Compilar 13MB de WASM no thread principal congela a
+   * interface por segundos no celular — era o travamento logo depois de
+   * detectar o rosto.
+   */
+  ort.env.wasm.proxy = true;
   ort.env.logLevel = "error";
-  return ort.InferenceSession.create(MODEL_URL, {
+
+  const model = await fetchModel();
+  const session = await ort.InferenceSession.create(model, {
     executionProviders: ["wasm"],
     graphOptimizationLevel: "all",
   });
+  report(1);
+  return session;
 }
 
 export function loadArcFace() {

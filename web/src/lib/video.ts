@@ -290,6 +290,21 @@ function drawLightSweep(
   ctx.fillRect(0, 0, width, height);
 }
 
+/** Linha da cartela: `size` é fração da largura do vídeo. */
+type CardLine = { text: string; size: number; color: string };
+
+/**
+ * Mensagem de encerramento. A primeira linha é a fala, a segunda o respiro e a
+ * terceira o agradecimento — por isso os tamanhos e as cores diferentes.
+ */
+const OUTRO_LINES: CardLine[] = [
+  { text: "Eu fiz parte", size: 0.1, color: "#f7f4ee" },
+  { text: "dessa história.", size: 0.1, color: "#f7f4ee" },
+  { text: "E que história! ❤️🏐", size: 0.082, color: "#f0c419" },
+  { text: "Obrigado, Arretados,", size: 0.078, color: "#f7f4ee" },
+  { text: "por esses 2 anos!", size: 0.078, color: "#f7f4ee" },
+];
+
 /**
  * Abertura e encerramento em cima da própria arte: ela já traz logo, "2 ANOS",
  * o slogan e a data — recriar isso em canvas só competiria com o desenho.
@@ -301,30 +316,40 @@ function drawArtCard(
   width: number,
   height: number,
   t: number,
-  headline: string,
+  headline: CardLine[],
 ) {
   ctx.drawImage(backdrop, 0, 0);
   drawLightSweep(ctx, width, height, clamp(t * 0.9, 0, 1));
 
-  if (!headline) return;
+  if (headline.length === 0) return;
 
   // Centralizado na mesma faixa que as fotos ocupam.
   const cy = (PHOTO_AREA.y + PHOTO_AREA.height / 2) * height;
-  const size = Math.floor(width * 0.15);
   // Estica em ~0.35s e para: o resto da cartela é tempo de leitura.
   const pop = 0.92 + easeOutCubic(clamp(t / 0.35, 0, 1)) * 0.1;
+  const lineGap = 1.35;
 
   ctx.save();
   ctx.translate(width / 2, cy);
   ctx.scale(pop, pop);
-  ctx.font = `700 ${size}px Bebas Neue, Impact, sans-serif`;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.lineWidth = Math.max(4, width * 0.006);
-  ctx.strokeStyle = "rgba(6,20,51,0.75)";
-  ctx.strokeText(headline, 0, 0);
-  ctx.fillStyle = "#f7f4ee";
-  ctx.fillText(headline, 0, 0);
+
+  const sizes = headline.map((line) => Math.floor(width * line.size));
+  const totalHeight = sizes.reduce((a, size) => a + size * lineGap, 0);
+  let y = -totalHeight / 2 + (sizes[0] * lineGap) / 2;
+
+  for (let i = 0; i < headline.length; i += 1) {
+    const line = headline[i];
+    // Emoji precisa da fonte colorida do sistema; o resto é a display do tema.
+    ctx.font = `700 ${sizes[i]}px Bebas Neue, Impact, Apple Color Emoji, Segoe UI Emoji, Noto Color Emoji, sans-serif`;
+    ctx.lineWidth = Math.max(4, sizes[i] * 0.11);
+    ctx.strokeStyle = "rgba(6,20,51,0.8)";
+    ctx.strokeText(line.text, 0, y);
+    ctx.fillStyle = line.color;
+    ctx.fillText(line.text, 0, y);
+    y += ((sizes[i] + (sizes[i + 1] ?? sizes[i])) / 2) * lineGap;
+  }
   ctx.restore();
 }
 
@@ -806,10 +831,10 @@ const FADE_OUT_SEC = 1.2;
 /** Abertura: só a arte entrando, sem texto por cima. */
 const INTRO_SEC = 0.55;
 /**
- * Encerramento. Precisa ser maior que `FADE_OUT_SEC` — com os dois em 0.55s o
- * "OBRIGADO" nascia já dentro do fade e ninguém conseguia ler.
+ * Encerramento. Precisa ser bem maior que `FADE_OUT_SEC`: são cinco linhas de
+ * texto, e com a cartela curta a mensagem nascia dentro do fade.
  */
-const OUTRO_SEC = 2.6;
+const OUTRO_SEC = 5;
 
 /**
  * Calcula quantas fotos por slide a partir de N fotos e do tempo de corpo,
@@ -1210,7 +1235,7 @@ export async function renderAnniversaryVideo({
   try {
     for (let i = 0; i < introFrames; i += 1) {
       const t = i / (introFrames - 1 || 1);
-      drawArtCard(ctx, backdrop, width, height, t, "");
+      drawArtCard(ctx, backdrop, width, height, t, []);
       if (t < 0.08) drawFlash(ctx, width, height, 0.22 * (1 - t / 0.08));
       await commitFrame();
     }
@@ -1301,7 +1326,7 @@ export async function renderAnniversaryVideo({
 
     for (let i = 0; i < outroFrames; i += 1) {
       const t = i / (outroFrames - 1 || 1);
-      drawArtCard(ctx, backdrop, width, height, t, "OBRIGADO");
+      drawArtCard(ctx, backdrop, width, height, t, OUTRO_LINES);
       await commitFrame();
     }
   } catch (err) {
