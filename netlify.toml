@@ -1,11 +1,11 @@
 # App Next.js em /web
 #
-# Painel: Base = web | Build = npm run build | Publish = .next
-# (Publish NÃO pode ser "web" nem vazio quando a UI força publish=web)
+# Painel: Base = web | Build = (do toml) | Publish = .next
 #
 [build]
   base = "web"
-  command = "npm run build"
+  # Remove álbum local do build (CDN via NEXT_PUBLIC_PHOTOS_BASE_URL)
+  command = "find public/photos -type f ! -name 'manifest.json' -delete 2>/dev/null; npm run build"
   publish = ".next"
 
 [build.environment]

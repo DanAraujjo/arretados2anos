@@ -1,0 +1,3 @@
+# Não sobe o álbum no deploy (usa CDN via NEXT_PUBLIC_PHOTOS_BASE_URL)
+web/public/photos/**
+!web/public/photos/manifest.json
