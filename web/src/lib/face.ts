@@ -3,13 +3,13 @@ let modelsReady: Promise<void> | null = null;
 
 /**
  * Distância euclidiana entre descritores.
- * face-api costuma usar ~0.6. Quanto MENOR o limite, menos falso positivo.
- * 0.48 ≈ meio-termo: acha mais você sem liberar geral.
+ * face-api default ≈ 0.6. Sites de corrida priorizam recall ("achou você").
+ * 0.55 = mais fotos suas, poucos falso positivo em álbum fechado.
  */
-export const MATCH_THRESHOLD = 0.48;
-/** Rostos minúsculos em grupo são ruidosos — um pouco mais rigoroso. */
-export const SMALL_FACE_THRESHOLD = 0.44;
-export const SMALL_FACE_AREA = 0.01; // ~1% da imagem
+export const MATCH_THRESHOLD = 0.55;
+/** Rostos pequenos em grupo: só um pouco mais rigoroso. */
+export const SMALL_FACE_THRESHOLD = 0.52;
+export const SMALL_FACE_AREA = 0.008;
 
 async function api() {
   if (!faceapi) {

@@ -17,7 +17,7 @@ import { createCanvas, loadImage, Image, ImageData } from "@napi-rs/canvas";
 const require = createRequire(import.meta.url);
 const faceapi = require("@vladmandic/face-api/dist/face-api.node-wasm.js");
 
-const FACE_CACHE_VERSION = 6;
+const FACE_CACHE_VERSION = 7;
 const IMAGE_EXT = new Set([".jpg", ".jpeg", ".png", ".webp"]);
 /** Maior = landmarks melhores em grupo; SSD interno já usa 512. */
 const MAX_SIDE = 720;

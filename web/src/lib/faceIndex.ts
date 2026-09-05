@@ -24,7 +24,11 @@ let loading: Promise<{ index: FaceIndex; source: string } | null> | null = null;
 
 function indexUrls() {
   const base = photosBaseUrl();
-  return [base ? `${base}/faces.json` : null, "/photos/faces.json"].filter(Boolean) as string[];
+  // ?v= bust CDN/browser cache quando o índice muda (jsDelivr @main é agressivo)
+  const q = `?v=${FACE_CACHE_VERSION}`;
+  return [base ? `${base}/faces.json${q}` : null, `/photos/faces.json${q}`].filter(
+    Boolean,
+  ) as string[];
 }
 
 function parseIndex(data: FaceIndexFile): FaceIndex {
@@ -56,12 +60,17 @@ export async function loadFaceIndex(): Promise<{
         try {
           const res = await fetch(url, {
             headers: { Accept: "application/json" },
-            cache: "force-cache",
+            cache: "no-cache",
           });
           if (!res.ok) continue;
           const data = (await res.json()) as FaceIndexFile;
-          if (!data?.photos || (data.version !== FACE_CACHE_VERSION && data.version !== 5))
+          // Aceita índice atual ou o imediatamente anterior (CDN em propagação)
+          if (
+            !data?.photos ||
+            (data.version !== FACE_CACHE_VERSION && data.version !== FACE_CACHE_VERSION - 1)
+          ) {
             continue;
+          }
           const index = parseIndex(data);
           cachedIndex = { key, index, source: url };
           return { index, source: url };
