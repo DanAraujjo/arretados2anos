@@ -5,8 +5,8 @@
 [build]
   base = "web"
   # Remove álbum local do build (CDN via NEXT_PUBLIC_PHOTOS_BASE_URL)
-  # Mantém manifest.json + faces.json (índice rápido do scan)
-  command = "find public/photos -type f ! -name 'manifest.json' ! -name 'faces.json' -delete 2>/dev/null; npm run build"
+  # Mantém manifest.json + faces.bin (índice rápido do scan)
+  command = "find public/photos -type f ! -name 'manifest.json' ! -name 'faces.bin' -delete 2>/dev/null; npm run build"
   publish = ".next"
 
 [build.environment]

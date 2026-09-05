@@ -6,3 +6,6 @@ download-log.txt
 
 # Local Netlify folder
 .netlify
+
+# Fonte da trilha (o artefato publicado é web/public/music/tema.m4a)
+assets/

@@ -1,4 +1,3 @@
-import { createReadStream, existsSync } from "fs";
 import { readdir } from "fs/promises";
 import path from "path";
 import type { PhotoItem } from "@/lib/types";
@@ -105,18 +104,4 @@ export async function loadPhotos(): Promise<{
       source: "local",
     };
   }
-}
-
-export function localPhotoPath(name: string) {
-  const safe = safePhotoName(name);
-  if (!safe) return null;
-  const full = path.join(localPhotosDir(), safe);
-  if (!existsSync(full)) return null;
-  return full;
-}
-
-export function openLocalPhotoStream(name: string) {
-  const full = localPhotoPath(name);
-  if (!full) return null;
-  return createReadStream(full);
 }

@@ -1,19 +1,30 @@
+import { DEFAULT_MUSIC_URL, createFrameSink, yieldToUi } from "@/lib/encode";
+import { mapPool } from "@/lib/pool";
 import type { FaceBox } from "@/lib/types";
 
+/**
+ * Fonte de imagem já reduzida pro tamanho que o vídeo usa.
+ * Desenhar um JPEG de 13MP a cada frame era a maior causa de travamento —
+ * `prepareClips` reduz uma vez e o render só compõe.
+ */
+export type ClipImage = {
+  source: CanvasImageSource;
+  width: number;
+  height: number;
+};
+
 export type VideoClip = {
-  image: HTMLImageElement;
+  image: ClipImage;
   face?: FaceBox;
+  key: string;
 };
 
 export type RenderVideoOptions = {
   clips: VideoClip[];
-  title?: string;
-  subtitle?: string;
   width?: number;
   height?: number;
   fps?: number;
   durationSec?: number;
-  bpm?: number;
   musicUrl?: string;
   onProgress?: (ratio: number) => void;
 };
@@ -64,12 +75,6 @@ function easeInOut(t: number) {
   return t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2;
 }
 
-function easeOutBack(t: number) {
-  const c = 1.70158;
-  const x = t - 1;
-  return 1 + c * x * x * x + c * x * x;
-}
-
 function easeOutCubic(t: number) {
   return 1 - (1 - t) ** 3;
 }
@@ -96,14 +101,6 @@ function classifySubject(face?: FaceBox): SubjectKind {
   return "scene";
 }
 
-/** Max approach to face — moderate, never crop facial features tightly. */
-function maxFraming(subject: SubjectKind, face?: FaceBox) {
-  const span = faceSpan(face);
-  if (subject === "group") return 0.28;
-  if (subject === "portrait") return clamp(0.42 + (0.22 - span) * 0.6, 0.38, 0.58);
-  return 0.45;
-}
-
 function softApproach(t: number, hold: number, max: number) {
   // Quase sem “freeze” no início — já começa a mover
   const h = Math.min(hold, 0.06);
@@ -111,21 +108,21 @@ function softApproach(t: number, hold: number, max: number) {
   return max * 0.06 + easeInOutCubic((t - h) / (1 - h)) * (max * 0.94);
 }
 
-function isLandscapeImage(img: HTMLImageElement) {
-  return img.naturalWidth > img.naturalHeight * 1.08;
+function isLandscapeImage(img: ClipImage) {
+  return img.width > img.height * 1.08;
 }
 
 /** Soft dimmed cover fill behind letterboxed landscape shots (no blur — blur was killing render pace). */
 function drawBackdrop(
   ctx: CanvasRenderingContext2D,
-  img: HTMLImageElement,
+  img: ClipImage,
   dx: number,
   dy: number,
   dw: number,
   dh: number,
 ) {
-  const iw = img.naturalWidth;
-  const ih = img.naturalHeight;
+  const iw = img.width;
+  const ih = img.height;
   const s = Math.max(dw / iw, dh / ih);
   const bw = iw * s;
   const bh = ih * s;
@@ -139,7 +136,7 @@ function drawBackdrop(
   ctx.globalAlpha = 0.28;
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = "low";
-  ctx.drawImage(img, bx, by, bw, bh);
+  ctx.drawImage(img.source, bx, by, bw, bh);
   ctx.globalAlpha = 1;
   ctx.fillStyle = "rgba(5,15,40,0.62)";
   ctx.fillRect(dx, dy, dw, dh);
@@ -192,19 +189,18 @@ function placeCover(
  */
 function drawFramed(
   ctx: CanvasRenderingContext2D,
-  img: HTMLImageElement,
+  img: ClipImage,
   dx: number,
   dy: number,
   dw: number,
   dh: number,
   face: FaceBox | undefined,
   framing: number,
-  _zoom = 1,
   panX = 0,
   panY = 0,
 ) {
-  const iw = img.naturalWidth;
-  const ih = img.naturalHeight;
+  const iw = img.width;
+  const ih = img.height;
   const landscape = isLandscapeImage(img);
   const f = clamp(framing, 0, 1);
 
@@ -269,7 +265,7 @@ function drawFramed(
   ctx.clip();
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = "medium";
-  ctx.drawImage(img, dx + x, dy + y, drawW, drawH);
+  ctx.drawImage(img.source, dx + x, dy + y, drawW, drawH);
   ctx.restore();
 }
 
@@ -277,13 +273,6 @@ function drawFlash(ctx: CanvasRenderingContext2D, width: number, height: number,
   if (alpha <= 0) return;
   ctx.fillStyle = `rgba(255,255,255,${clamp(alpha, 0, 1)})`;
   ctx.fillRect(0, 0, width, height);
-}
-
-function drawVignette(ctx: CanvasRenderingContext2D, width: number, height: number) {
-  // Leve e barato (sem radial grande todo frame)
-  ctx.fillStyle = "rgba(4,12,32,0.22)";
-  ctx.fillRect(0, 0, width, height * 0.12);
-  ctx.fillRect(0, height * 0.88, width, height * 0.12);
 }
 
 function drawLightSweep(
@@ -301,124 +290,42 @@ function drawLightSweep(
   ctx.fillRect(0, 0, width, height);
 }
 
-function drawChrome(
+/**
+ * Abertura e encerramento em cima da própria arte: ela já traz logo, "2 ANOS",
+ * o slogan e a data — recriar isso em canvas só competiria com o desenho.
+ * A arte fica **parada**; o movimento é todo das fotos.
+ */
+function drawArtCard(
   ctx: CanvasRenderingContext2D,
+  backdrop: HTMLCanvasElement,
   width: number,
   height: number,
-  logo: HTMLImageElement | null,
-) {
-  const veil = ctx.createLinearGradient(0, height * 0.72, 0, height);
-  veil.addColorStop(0, "rgba(6,20,51,0)");
-  veil.addColorStop(1, "rgba(6,20,51,0.42)");
-  ctx.fillStyle = veil;
-  ctx.fillRect(0, 0, width, height);
-
-  // Watermark — bottom left: logo + 2 ANOS + 🥳
-  const pad = Math.floor(width * 0.045);
-  const logoSize = Math.floor(width * 0.11);
-  const barH = Math.floor(logoSize * 1.15);
-  const textSize = Math.floor(width * 0.055);
-  const emojiSize = Math.floor(width * 0.065);
-  const gap = Math.floor(width * 0.022);
-  const inset = Math.floor(barH * 0.08);
-
-  ctx.font = `700 ${textSize}px Bebas Neue, Impact, sans-serif`;
-  const textW = ctx.measureText("2 ANOS").width;
-  ctx.font = `${emojiSize}px Apple Color Emoji, Segoe UI Emoji, Noto Color Emoji, sans-serif`;
-  const emojiW = Math.max(emojiSize, ctx.measureText("🥳").width);
-  const barW = inset + logoSize + gap + textW + gap + emojiW + inset;
-  const barX = pad;
-  const barY = height - pad - barH;
-
-  ctx.save();
-  ctx.globalAlpha = 0.92;
-
-  ctx.fillStyle = "rgba(5,15,40,0.55)";
-  const r = barH / 2;
-  ctx.beginPath();
-  ctx.moveTo(barX + r, barY);
-  ctx.arcTo(barX + barW, barY, barX + barW, barY + barH, r);
-  ctx.arcTo(barX + barW, barY + barH, barX, barY + barH, r);
-  ctx.arcTo(barX, barY + barH, barX, barY, r);
-  ctx.arcTo(barX, barY, barX + barW, barY, r);
-  ctx.closePath();
-  ctx.fill();
-
-  const logoX = barX + inset;
-  const logoY = barY + (barH - logoSize) / 2;
-  if (logo) {
-    ctx.save();
-    ctx.beginPath();
-    ctx.arc(logoX + logoSize / 2, logoY + logoSize / 2, logoSize / 2, 0, Math.PI * 2);
-    ctx.clip();
-    ctx.drawImage(logo, logoX, logoY, logoSize, logoSize);
-    ctx.restore();
-    ctx.strokeStyle = "rgba(240,180,41,0.7)";
-    ctx.lineWidth = Math.max(2, width * 0.003);
-    ctx.beginPath();
-    ctx.arc(logoX + logoSize / 2, logoY + logoSize / 2, logoSize / 2 - 1, 0, Math.PI * 2);
-    ctx.stroke();
-  }
-
-  const textX = logoX + logoSize + gap;
-  ctx.fillStyle = "#f7f4ee";
-  ctx.font = `700 ${textSize}px Bebas Neue, Impact, sans-serif`;
-  ctx.textAlign = "left";
-  ctx.textBaseline = "middle";
-  ctx.fillText("2 ANOS", textX, barY + barH / 2 + textSize * 0.04);
-
-  ctx.font = `${emojiSize}px Apple Color Emoji, Segoe UI Emoji, Noto Color Emoji, sans-serif`;
-  ctx.fillText("🥳", textX + textW + gap, barY + barH / 2);
-
-  ctx.restore();
-}
-
-function drawTitleCard(
-  ctx: CanvasRenderingContext2D,
-  width: number,
-  height: number,
-  title: string,
-  subtitle: string,
-  logo: HTMLImageElement | null,
   t: number,
-  beatPulse: number,
+  headline: string,
 ) {
-  const g = ctx.createLinearGradient(0, 0, width, height);
-  g.addColorStop(0, "#07183f");
-  g.addColorStop(0.45, "#12306a");
-  g.addColorStop(1, "#1a6b8a");
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, width, height);
-  drawLightSweep(ctx, width, height, (t * 0.8 + beatPulse * 0.15) % 1);
+  ctx.drawImage(backdrop, 0, 0);
+  drawLightSweep(ctx, width, height, clamp(t * 0.9, 0, 1));
 
-  const pop = 0.9 + easeOutCubic(Math.min(1, t * 2.2)) * 0.12 + beatPulse * 0.02;
-  if (logo) {
-    const size = Math.floor(width * 0.42 * pop);
-    const x = (width - size) / 2;
-    const y = height * 0.18;
-    ctx.save();
-    ctx.beginPath();
-    ctx.arc(width / 2, y + size / 2, size / 2, 0, Math.PI * 2);
-    ctx.clip();
-    ctx.drawImage(logo, x, y, size, size);
-    ctx.restore();
-  }
+  if (!headline) return;
+
+  // Centralizado na mesma faixa que as fotos ocupam.
+  const cy = (PHOTO_AREA.y + PHOTO_AREA.height / 2) * height;
+  const size = Math.floor(width * 0.15);
+  // Estica em ~0.35s e para: o resto da cartela é tempo de leitura.
+  const pop = 0.92 + easeOutCubic(clamp(t / 0.35, 0, 1)) * 0.1;
 
   ctx.save();
-  ctx.translate(width / 2, height * 0.72);
+  ctx.translate(width / 2, cy);
   ctx.scale(pop, pop);
-  ctx.fillStyle = "#f7f4ee";
-  ctx.font = `700 ${Math.floor(width * 0.14)}px Bebas Neue, Impact, sans-serif`;
+  ctx.font = `700 ${size}px Bebas Neue, Impact, sans-serif`;
   ctx.textAlign = "center";
-  ctx.fillText(title, 0, 0);
+  ctx.textBaseline = "middle";
+  ctx.lineWidth = Math.max(4, width * 0.006);
+  ctx.strokeStyle = "rgba(6,20,51,0.75)";
+  ctx.strokeText(headline, 0, 0);
+  ctx.fillStyle = "#f7f4ee";
+  ctx.fillText(headline, 0, 0);
   ctx.restore();
-
-  if (subtitle) {
-    ctx.fillStyle = "rgba(247,244,238,0.85)";
-    ctx.font = `700 ${Math.floor(width * 0.065)}px Bebas Neue, Impact, sans-serif`;
-    ctx.textAlign = "center";
-    ctx.fillText(subtitle, width / 2, height * 0.8);
-  }
 }
 
 function drawVolleyCourt(
@@ -575,7 +482,7 @@ function collageSlots(count: number, variant: number): PinSlot[] {
 }
 
 function frameSizeForPhoto(
-  img: HTMLImageElement,
+  img: ClipImage,
   maxW: number,
   maxH: number,
 ): { w: number; h: number; landscape: boolean } {
@@ -687,29 +594,116 @@ function drawPinnedPhoto(
   ctx.fillRect(x + w * 0.64, y - pad * 0.7, w * 0.26, pad);
 
   ctx.imageSmoothingQuality = "medium";
-  drawFramed(ctx, clip.image, x, y, w, h, clip.face, m.framing, 1, m.panX, m.panY);
+  drawFramed(ctx, clip.image, x, y, w, h, clip.face, m.framing, m.panX, m.panY);
   ctx.restore();
 }
 
-function createCourtLayer(width: number, height: number) {
+/** Arte de fundo do vídeo (9:16). Se faltar, cai no gráfico de quadra gerado. */
+const BACKGROUND_URL = "/bg-arretados.jpg";
+
+/**
+ * Faixa da arte onde as fotos podem entrar: da base do banner
+ * "SEMPRE ARRETADOS!" até o rodapé, largura quase cheia. Pode cobrir a rede, a
+ * areia e a bola — só o cabeçalho fica reservado. Fração da tela.
+ */
+const PHOTO_AREA = { x: 0.02, y: 0.22, width: 0.96, height: 0.76 };
+
+/**
+ * Folga dos layouts dentro da área. Com a área ocupando quase a tela toda, os
+ * presets no tamanho natural já entregam foto grande — passar de 1 fazia o
+ * slide solo estourar a largura e comer a moldura branca.
+ */
+const SLOT_SAFETY = 1;
+
+function loadImageElement(src: string) {
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error(`Falha ao carregar ${src}`));
+    img.src = src;
+  });
+}
+
+/** Desenha a arte cobrindo a tela inteira (recorta o excedente, sem deformar). */
+function drawCover(
+  ctx: CanvasRenderingContext2D,
+  img: HTMLImageElement,
+  width: number,
+  height: number,
+) {
+  const scale = Math.max(width / img.naturalWidth, height / img.naturalHeight);
+  const w = img.naturalWidth * scale;
+  const h = img.naturalHeight * scale;
+  ctx.drawImage(img, (width - w) / 2, (height - h) / 2, w, h);
+}
+
+function createPhotoLayer(width: number, height: number) {
   const layer = document.createElement("canvas");
   layer.width = width;
   layer.height = height;
-  const lctx = layer.getContext("2d");
-  if (lctx) drawVolleyCourt(lctx, width, height, 0.35);
   return layer;
 }
 
-function drawCollageMural(
+/** Compõe uma camada de fotos escalada a partir do centro, com opacidade. */
+function drawLayerScaled(
+  ctx: CanvasRenderingContext2D,
+  layer: HTMLCanvasElement,
+  width: number,
+  height: number,
+  scale: number,
+  alpha: number,
+) {
+  if (alpha <= 0.001) return;
+  ctx.save();
+  ctx.globalAlpha = clamp(alpha, 0, 1);
+  ctx.translate(width / 2, height / 2);
+  ctx.scale(scale, scale);
+  ctx.translate(-width / 2, -height / 2);
+  ctx.drawImage(layer, 0, 0);
+  ctx.restore();
+}
+
+async function createBackdropLayer(width: number, height: number) {
+  const layer = document.createElement("canvas");
+  layer.width = width;
+  layer.height = height;
+  const lctx = layer.getContext("2d", { alpha: false });
+  if (!lctx) return layer;
+
+  try {
+    const art = await loadImageElement(BACKGROUND_URL);
+    lctx.imageSmoothingEnabled = true;
+    lctx.imageSmoothingQuality = "high";
+    drawCover(lctx, art, width, height);
+  } catch {
+    drawVolleyCourt(lctx, width, height, 0.35);
+  }
+  return layer;
+}
+
+/**
+ * Desenha **só** as fotos, em canvas transparente.
+ *
+ * O fundo fica de fora de propósito: é ele que dá a identidade da peça e não
+ * pode balançar junto com as transições. A arte é desenhada uma vez por frame,
+ * sem transformação, e esta camada é a única que se mexe.
+ */
+function drawPhotoLayer(
   ctx: CanvasRenderingContext2D,
   shot: PlannedShot,
   width: number,
   height: number,
   t: number,
-  courtLayer?: HTMLCanvasElement | null,
 ) {
-  if (courtLayer) ctx.drawImage(courtLayer, 0, 0);
-  else drawVolleyCourt(ctx, width, height, t);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+
+  // Os layouts são desenhados em espaço 0–1 e mapeados pra área útil da arte.
+  const areaX = PHOTO_AREA.x * width;
+  const areaY = PHOTO_AREA.y * height;
+  const areaW = PHOTO_AREA.width * width;
+  const areaH = PHOTO_AREA.height * height;
 
   const group = shot.clips.slice(0, 4);
   const slots = collageSlots(group.length, shot.layoutVariant);
@@ -724,21 +718,41 @@ function drawCollageMural(
     const motion = shot.motions[i] ?? MOTION_CYCLE[i % MOTION_CYCLE.length];
     const { w, h, landscape } = frameSizeForPhoto(
       clip.image,
-      slot.maxW * width,
-      slot.maxH * height,
+      slot.maxW * areaW * SLOT_SAFETY,
+      slot.maxH * areaH * SLOT_SAFETY,
     );
-    const x = slot.cx * width - w / 2;
-    const y = slot.cy * height - h / 2;
+
+    // A moldura polaroid e o giro passam da caixa da foto: o footprint girado
+    // é o que precisa caber na área útil, senão a colagem invade a arte.
+    const pad = Math.min(w, h) * 0.04;
+    const boxW = w + pad * 2;
+    const boxH = h + pad * 3.4;
+    const rad = ((Math.abs(slot.rot) + 2) * Math.PI) / 180;
+    const footW = boxW * Math.cos(rad) + boxH * Math.sin(rad);
+    const footH = boxW * Math.sin(rad) + boxH * Math.cos(rad);
+
+    const cx =
+      footW >= areaW
+        ? areaX + areaW / 2
+        : clamp(areaX + slot.cx * areaW, areaX + footW / 2, areaX + areaW - footW / 2);
+    const cy =
+      footH >= areaH
+        ? areaY + areaH / 2
+        : clamp(areaY + slot.cy * areaH, areaY + footH / 2, areaY + areaH - footH / 2);
+
+    // A aba branca de baixo é maior que a de cima — sobe um pouco pra centrar.
+    const x = cx - w / 2;
+    const y = cy - h / 2 - pad * 0.7;
 
     const enter = easeOutCubic(clamp((t / enterWindow - i * stagger) / appearDur, 0, 1));
     if (enter <= 0.01) continue;
 
     const dir = i % 2 === 0 ? 1 : -1;
-    const fromX = (i % 2 === 0 ? -1 : 1) * width * 0.14;
-    const fromY = (i < group.length / 2 ? -1 : 1) * height * 0.09;
+    const fromX = (i % 2 === 0 ? -1 : 1) * areaW * 0.16;
+    const fromY = (i < group.length / 2 ? -1 : 1) * areaH * 0.12;
     const slideIn = 1 - enter;
-    const driftX = Math.sin((t * 1.2 + i * 0.45) * Math.PI) * width * 0.005;
-    const driftY = Math.cos((t * 1.15 + i * 0.37) * Math.PI) * height * 0.004;
+    const driftX = Math.sin((t * 1.2 + i * 0.45) * Math.PI) * areaW * 0.005;
+    const driftY = Math.cos((t * 1.15 + i * 0.37) * Math.PI) * areaH * 0.005;
 
     drawPinnedPhoto(
       ctx,
@@ -757,26 +771,12 @@ function drawCollageMural(
   }
 }
 
-function drawShotContent(
-  ctx: CanvasRenderingContext2D,
-  shot: PlannedShot,
-  t: number,
-  width: number,
-  height: number,
-  courtLayer?: HTMLCanvasElement | null,
-) {
-  drawCollageMural(ctx, shot, width, height, t, courtLayer);
-}
-
 function uniqueClips(clips: VideoClip[]): VideoClip[] {
   const unique: VideoClip[] = [];
   const seen = new Set<string>();
   for (const clip of clips) {
-    const key =
-      clip.image.src ||
-      `${clip.image.naturalWidth}x${clip.image.naturalHeight}:${unique.length}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
+    if (seen.has(clip.key)) continue;
+    seen.add(clip.key);
     unique.push(clip);
   }
   return unique;
@@ -799,6 +799,17 @@ function pickSoloIndex(clips: VideoClip[]): number {
 
 /** Duração máxima do vídeo (hard cap). */
 export const MAX_VIDEO_SEC = 58;
+/** Teto por slide — acima disso a foto "congela" na tela. */
+const MAX_SLIDE_SEC = 5.2;
+/** Fade final. Casa com o da trilha, então imagem e som apagam juntos. */
+const FADE_OUT_SEC = 1.2;
+/** Abertura: só a arte entrando, sem texto por cima. */
+const INTRO_SEC = 0.55;
+/**
+ * Encerramento. Precisa ser maior que `FADE_OUT_SEC` — com os dois em 0.55s o
+ * "OBRIGADO" nascia já dentro do fade e ninguém conseguia ler.
+ */
+const OUTRO_SEC = 2.6;
 
 /**
  * Calcula quantas fotos por slide a partir de N fotos e do tempo de corpo,
@@ -807,7 +818,7 @@ export const MAX_VIDEO_SEC = 58;
 export function planGroupSizes(photoCount: number, bodySec: number): number[] {
   const n = Math.max(1, photoCount);
   const minSlideSec = 2.15;
-  const maxSlideSec = 5.2;
+  const maxSlideSec = MAX_SLIDE_SEC;
   const minSlides = Math.ceil(n / 4);
   const maxSlides = Math.min(n, Math.max(minSlides, Math.floor(bodySec / minSlideSec)));
 
@@ -857,6 +868,43 @@ export function planGroupSizes(photoCount: number, bodySec: number): number[] {
   return sizes.filter((s) => s > 0);
 }
 
+/**
+ * Tempo relativo do slide. Cresce com o nº de fotos (uma colagem de 4 precisa
+ * de mais tela que um solo), mas sublinear pra colagem não engolir o vídeo.
+ * Solo ganha bônus de destaque.
+ */
+function shotWeight(photoCount: number) {
+  const n = clamp(photoCount, 1, 4);
+  if (n === 1) return 1.3;
+  return 1 + (n - 1) * 0.55;
+}
+
+/**
+ * Rede de segurança contra foto repetida: nenhuma pode aparecer em dois slides.
+ * Slide que fique vazio depois da limpeza sai da lista.
+ */
+function dropRepeatedClips(shots: PlannedShot[]): PlannedShot[] {
+  const seen = new Set<string>();
+  const out: PlannedShot[] = [];
+  for (const shot of shots) {
+    const clips: VideoClip[] = [];
+    for (const clip of shot.clips.slice(0, 4)) {
+      if (seen.has(clip.key)) continue;
+      seen.add(clip.key);
+      clips.push(clip);
+    }
+    if (clips.length === 0) continue;
+    out.push({
+      ...shot,
+      clips,
+      clip: clips[0],
+      motions: clips.map((_, i) => shot.motions[i] ?? MOTION_CYCLE[i % MOTION_CYCLE.length]),
+      weight: shotWeight(clips.length),
+    });
+  }
+  return out;
+}
+
 function planShots(clips: VideoClip[], bodySec: number): PlannedShot[] {
   const remaining = uniqueClips(clips);
   if (remaining.length === 0) return [];
@@ -873,7 +921,7 @@ function planShots(clips: VideoClip[], bodySec: number): PlannedShot[] {
   ];
 
   for (let s = 0; s < groupSizes.length; s += 1) {
-    let want = Math.min(groupSizes[s], remaining.length);
+    const want = Math.min(groupSizes[s], remaining.length);
     if (want <= 0) break;
 
     let group: VideoClip[];
@@ -886,8 +934,7 @@ function planShots(clips: VideoClip[], bodySec: number): PlannedShot[] {
 
     const dir = dirs[s % dirs.length];
     const n = group.length;
-    // Peso ~ proporcional às fotos, com leve bônus pra solo (destaque)
-    const weight = n === 1 ? 1.25 : n === 2 ? 1.1 : n === 3 ? 1.05 : 1;
+    const weight = shotWeight(n);
     const motions = group.map((_, i) => {
       if (n === 1 && group[0].face) return "pushIn" as PinMotion;
       return MOTION_CYCLE[(s * 3 + i) % MOTION_CYCLE.length];
@@ -919,66 +966,161 @@ function planShots(clips: VideoClip[], bodySec: number): PlannedShot[] {
         layoutVariant: shots.length,
         motions: extra.map((_, i) => MOTION_CYCLE[i % MOTION_CYCLE.length]),
         transition: TRANSITIONS[shots.length % TRANSITIONS.length],
-        weight: extra.length,
+        weight: shotWeight(extra.length),
       });
     } else {
       last.clips.push(remaining.shift()!);
       last.motions.push(MOTION_CYCLE[last.clips.length % MOTION_CYCLE.length]);
-      last.weight = last.clips.length === 1 ? 1.25 : last.clips.length;
+      last.weight = shotWeight(last.clips.length);
     }
   }
 
-  return shots;
+  return dropRepeatedClips(shots);
 }
 
-async function loadMusic(
-  audioCtx: AudioContext,
-  url: string,
-): Promise<{
-  dest: MediaStreamAudioDestinationNode;
-  master: GainNode;
-  stop: () => void;
-}> {
-  const dest = audioCtx.createMediaStreamDestination();
-  const master = audioCtx.createGain();
-  master.gain.value = 0.9;
-  master.connect(dest);
+/** Lado máximo de cada foto no render — cobre o maior slot com folga de zoom. */
+const CLIP_MAX_SIDE = 1180;
 
-  const res = await fetch(url);
-  if (!res.ok) throw new Error("música");
-  const raw = await res.arrayBuffer();
-  const buffer = await audioCtx.decodeAudioData(raw.slice(0));
-  const src = audioCtx.createBufferSource();
-  src.buffer = buffer;
-  src.loop = true;
-  src.connect(master);
-  src.start(0);
+async function decodeScaled(
+  blob: Blob,
+  maxSide: number,
+  scratch: HTMLCanvasElement,
+): Promise<ClipImage> {
+  const source = await createImageBitmap(blob);
+  const scale = Math.min(1, maxSide / Math.max(source.width, source.height));
+  if (scale >= 1) {
+    return { source, width: source.width, height: source.height };
+  }
 
-  return {
-    dest,
-    master,
-    stop: () => {
+  const width = Math.max(1, Math.round(source.width * scale));
+  const height = Math.max(1, Math.round(source.height * scale));
+
+  const ctx = scratch.getContext("2d", { alpha: false });
+  if (!ctx) throw new Error("Canvas indisponível");
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+
+  // Reduções acima de 2× ficam serrilhadas em um passo só — vai pela metade.
+  let currentW = source.width;
+  let currentH = source.height;
+  let current: CanvasImageSource = source;
+  while (currentW > width * 2 && currentH > height * 2) {
+    const nextW = Math.max(width, Math.round(currentW / 2));
+    const nextH = Math.max(height, Math.round(currentH / 2));
+    scratch.width = nextW;
+    scratch.height = nextH;
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(current, 0, 0, currentW, currentH, 0, 0, nextW, nextH);
+    if (current !== source) (current as ImageBitmap).close();
+    current = await createImageBitmap(scratch, 0, 0, nextW, nextH);
+    currentW = nextW;
+    currentH = nextH;
+  }
+
+  scratch.width = width;
+  scratch.height = height;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(current, 0, 0, currentW, currentH, 0, 0, width, height);
+  if (current !== source) (current as ImageBitmap).close();
+  source.close();
+
+  const bitmap = await createImageBitmap(scratch, 0, 0, width, height);
+  return { source: bitmap, width, height };
+}
+
+/**
+ * Baixa e reduz as fotos **uma vez** antes do render.
+ *
+ * O original tem ~13MP; redesenhá-lo 30×/s em quatro pins era o que fazia o
+ * vídeo travar e o Safari mobile derrubar a aba. Aqui o pico de memória fica em
+ * uma foto decodificada por worker, e o resultado vira ImageBitmap (fora do
+ * heap do JS).
+ */
+export async function prepareClips(
+  items: Array<{ key: string; src: string; face?: FaceBox }>,
+  options: {
+    maxSide?: number;
+    concurrency?: number;
+    onProgress?: (done: number, total: number) => void;
+  } = {},
+): Promise<VideoClip[]> {
+  const maxSide = options.maxSide ?? CLIP_MAX_SIDE;
+  const concurrency = options.concurrency ?? 3;
+  const scratch = document.createElement("canvas");
+
+  const prepared = await mapPool<
+    { key: string; src: string; face?: FaceBox },
+    VideoClip | null
+  >(
+    items,
+    concurrency,
+    async (item) => {
       try {
-        src.stop();
+        const res = await fetch(item.src, { mode: "cors", cache: "force-cache" });
+        if (!res.ok) return null;
+        const image = await decodeScaled(await res.blob(), maxSide, scratch);
+        return { image, face: item.face, key: item.key } satisfies VideoClip;
       } catch {
-        // already stopped
+        return null;
       }
     },
-  };
+    options.onProgress,
+  );
+
+  return prepared.filter((clip): clip is VideoClip => clip !== null);
+}
+
+/** Libera os ImageBitmap do render (senão ficam presos até o GC). */
+export function releaseClips(clips: VideoClip[]) {
+  for (const clip of clips) {
+    const source = clip.image.source;
+    if (typeof ImageBitmap !== "undefined" && source instanceof ImageBitmap) {
+      source.close();
+    }
+  }
+}
+
+/**
+ * Reparte `total` frames entre os slides pelos pesos, garantindo soma exata
+ * (maior resto). Sem isso o vídeo fecha alguns frames curto ou longo demais.
+ */
+function splitFrames(weights: number[], total: number, minPerSlide: number) {
+  const sum = weights.reduce((a, b) => a + b, 0) || 1;
+  const exact = weights.map((w) => (w / sum) * total);
+  const counts = exact.map((n) => Math.max(minPerSlide, Math.floor(n)));
+
+  let drift = total - counts.reduce((a, b) => a + b, 0);
+  const order = exact
+    .map((n, i) => ({ i, frac: n - Math.floor(n) }))
+    .sort((a, b) => b.frac - a.frac);
+
+  for (let k = 0; drift > 0 && order.length > 0; k += 1) {
+    counts[order[k % order.length].i] += 1;
+    drift -= 1;
+  }
+  for (let k = 0; drift < 0; k += 1) {
+    const idx = order[k % order.length].i;
+    if (counts[idx] > minPerSlide) {
+      counts[idx] -= 1;
+      drift += 1;
+    } else if (k > order.length * 4) {
+      break;
+    }
+  }
+
+  return counts;
 }
 
 export async function renderAnniversaryVideo({
   clips,
-  title = "ARRETADOS",
-  subtitle = "2 ANOS",
-  width = 720,
-  height = 1280,
-  fps = 24,
-  durationSec = 58,
-  bpm = 128,
-  musicUrl = "/music/party.mp3",
+  width = 1080,
+  height = 1920,
+  fps = 30,
+  durationSec = MAX_VIDEO_SEC,
+  musicUrl = DEFAULT_MUSIC_URL,
   onProgress,
-}: RenderVideoOptions): Promise<Blob> {
+}: RenderVideoOptions): Promise<{ blob: Blob; extension: string }> {
   if (clips.length === 0) throw new Error("Nenhuma foto para animar");
 
   const canvas = document.createElement("canvas");
@@ -989,258 +1131,187 @@ export async function renderAnniversaryVideo({
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = "medium";
 
-  const courtLayer = createCourtLayer(width, height);
-  // Snapshot pra transição barata (evita desenhar 2 murais por frame)
-  const snap = document.createElement("canvas");
-  snap.width = width;
-  snap.height = height;
-  const snapCtx = snap.getContext("2d", { alpha: false });
-  if (!snapCtx) throw new Error("Canvas não disponível");
+  const backdrop = await createBackdropLayer(width, height);
 
-  const audioCtx = new AudioContext();
-  await audioCtx.resume();
-  let music: Awaited<ReturnType<typeof loadMusic>>;
-  try {
-    music = await loadMusic(audioCtx, musicUrl);
-  } catch {
-    await audioCtx.close();
-    throw new Error("Não deu pra carregar a música de fundo (/music/party.mp3).");
-  }
+  // Camadas transparentes só com as fotos: a arte nunca entra nas transições.
+  const current = createPhotoLayer(width, height);
+  const incoming = createPhotoLayer(width, height);
+  const currentCtx = current.getContext("2d");
+  const incomingCtx = incoming.getContext("2d");
+  if (!currentCtx || !incomingCtx) throw new Error("Canvas não disponível");
 
   /**
-   * captureStream(0) + requestFrame: cada frame gravado dura ~1/fps,
-   * independente do custo do draw (sem acelerar slides leves / travar pesados).
+   * Orçamento de frames fechado antes de desenhar qualquer coisa: o vídeo tem
+   * exatamente `totalFrames` frames a 1/fps cada, então dura o que promete —
+   * independente de quanto cada frame custa pra desenhar.
    */
-  type CaptureTrack = MediaStreamTrack & { requestFrame?: () => void };
-  let videoStream: MediaStream;
-  let requestFrame: (() => void) | null = null;
-  try {
-    const manual = canvas.captureStream(0);
-    const track = manual.getVideoTracks()[0] as CaptureTrack;
-    if (typeof track.requestFrame === "function") {
-      videoStream = manual;
-      requestFrame = () => track.requestFrame?.();
-    } else {
-      videoStream = canvas.captureStream(fps);
-    }
-  } catch {
-    videoStream = canvas.captureStream(fps);
-  }
-
-  const mixed = new MediaStream([
-    ...videoStream.getVideoTracks(),
-    ...music.dest.stream.getAudioTracks(),
-  ]);
-
-  const mimeType =
-    ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"].find(
-      (type) => MediaRecorder.isTypeSupported(type),
-    ) ?? "";
-  if (!mimeType) {
-    music.stop();
-    await audioCtx.close();
-    throw new Error("Seu navegador não grava vídeo via MediaRecorder");
-  }
-
-  const chunks: BlobPart[] = [];
-  const recorder = new MediaRecorder(mixed, {
-    mimeType,
-    videoBitsPerSecond: 5_000_000,
-    audioBitsPerSecond: 192_000,
-  });
-  const done = new Promise<Blob>((resolve, reject) => {
-    recorder.ondataavailable = (e) => {
-      if (e.data.size > 0) chunks.push(e.data);
-    };
-    recorder.onerror = () => reject(new Error("Falha ao gravar vídeo"));
-    recorder.onstop = () => resolve(new Blob(chunks, { type: "video/webm" }));
-  });
-
-  let logo: HTMLImageElement | null = null;
-  try {
-    logo = await new Promise<HTMLImageElement>((resolve, reject) => {
-      const img = new Image();
-      img.onload = () => resolve(img);
-      img.onerror = () => reject(new Error("logo"));
-      img.src = "/logo.jpg";
-    });
-  } catch {
-    logo = null;
-  }
-
-  const beatSec = 60 / bpm;
-  const introSec = 0.55;
-  const outroSec = 0.55;
-  // Hard cap 58s: calcula corpo e distribui slides pela qtd de fotos
-  const cappedDuration = Math.min(durationSec, MAX_VIDEO_SEC);
-  const bodySec = Math.max(4, cappedDuration - introSec - outroSec);
+  const totalFrames = Math.round(Math.min(durationSec, MAX_VIDEO_SEC) * fps);
+  const introFrames = Math.max(4, Math.round(fps * INTRO_SEC));
+  const outroFrames = Math.max(
+    Math.round(fps * (FADE_OUT_SEC + 0.8)),
+    Math.round(fps * OUTRO_SEC),
+  );
+  const bodyFrames = Math.max(fps, totalFrames - introFrames - outroFrames);
+  const bodySec = bodyFrames / fps;
 
   const shots = planShots(clips, bodySec);
   if (shots.length === 0) throw new Error("Nenhuma foto para animar");
 
-  const weightSum = shots.reduce((a, s) => a + s.weight, 0) || 1;
-  const slideFrameCounts = shots.map((s) =>
-    Math.max(12, Math.round(fps * bodySec * (s.weight / weightSum))),
+  /**
+   * Álbum pequeno encurta o vídeo em vez de esticar o slide. Segurar 8 fotos
+   * por 58s daria ~13s por slide — cansativo. O cap de 58s continua valendo.
+   */
+  const pacedBodyFrames = Math.min(
+    bodyFrames,
+    Math.round(shots.length * MAX_SLIDE_SEC * fps),
   );
-  // Garante soma exata de frames do corpo (= bodySec)
-  let plannedBodyFrames = slideFrameCounts.reduce((a, b) => a + b, 0);
-  const bodyTarget = Math.round(fps * bodySec);
-  if (slideFrameCounts.length > 0 && plannedBodyFrames !== bodyTarget) {
-    slideFrameCounts[slideFrameCounts.length - 1] += bodyTarget - plannedBodyFrames;
-    plannedBodyFrames = bodyTarget;
-  }
 
-  const introFrames = Math.max(4, Math.round(fps * introSec));
-  const outroFrames = Math.max(4, Math.round(fps * outroSec));
-  const totalFrames = introFrames + plannedBodyFrames + outroFrames;
-  // Segurança: nunca passar de MAX_VIDEO_SEC em frames
-  const maxTotalFrames = Math.round(MAX_VIDEO_SEC * fps);
-  if (totalFrames > maxTotalFrames && plannedBodyFrames > 0) {
-    const scale = (maxTotalFrames - introFrames - outroFrames) / plannedBodyFrames;
-    for (let i = 0; i < slideFrameCounts.length; i += 1) {
-      slideFrameCounts[i] = Math.max(8, Math.round(slideFrameCounts[i] * scale));
-    }
-  }
-  const bodyFramesFinal = slideFrameCounts.reduce((a, b) => a + b, 0);
-  const totalFramesFinal = introFrames + bodyFramesFinal + outroFrames;
-  const frameDuration = 1000 / fps;
+  const minSlideFrames = Math.max(8, Math.round(fps * 1.2));
+  const slideFrameCounts = splitFrames(
+    shots.map((s) => s.weight),
+    pacedBodyFrames,
+    Math.min(minSlideFrames, Math.floor(pacedBodyFrames / shots.length)),
+  );
 
-  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const sink = await createFrameSink({
+    canvas,
+    width,
+    height,
+    fps,
+    totalFrames: introFrames + slideFrameCounts.reduce((a, b) => a + b, 0) + outroFrames,
+    musicUrl,
+  });
 
-  const renderStarted = performance.now();
+  const totalFramesFinal =
+    introFrames + slideFrameCounts.reduce((a, b) => a + b, 0) + outroFrames;
+
+  const fadeOutFrames = Math.min(
+    Math.round(fps * FADE_OUT_SEC),
+    Math.max(1, Math.floor(totalFramesFinal / 3)),
+  );
+
   let frame = 0;
-  /** Agenda cada frame em t = frame/fps — duração do vídeo fica uniforme. */
   const commitFrame = async () => {
-    frame += 1;
-    const target = renderStarted + frame * frameDuration;
-    const delay = target - performance.now();
-    if (delay > 1) await wait(delay);
-    else await new Promise<void>((r) => requestAnimationFrame(() => r()));
-    requestFrame?.();
-    onProgress?.(Math.min(0.99, frame / totalFramesFinal));
-  };
-
-  recorder.start(100);
-
-  for (let i = 0; i < introFrames; i += 1) {
-    const t = i / (introFrames - 1 || 1);
-    const beatPulse = Math.max(0, 1 - (((i / fps) % beatSec) / beatSec) * 5);
-    drawTitleCard(ctx, width, height, title, subtitle, logo, t, beatPulse);
-    if (t < 0.08) drawFlash(ctx, width, height, 0.22 * (1 - t / 0.08));
-    await commitFrame();
-  }
-
-  for (let s = 0; s < shots.length; s += 1) {
-    const shot = shots[s];
-    const next = shots[s + 1];
-    const slideFrames = slideFrameCounts[s];
-    const transitionFrames = next
-      ? Math.min(Math.round(fps * 0.55), Math.max(8, Math.floor(slideFrames * 0.2)))
-      : 0;
-    const bodyFramesShot = next ? slideFrames - transitionFrames : slideFrames;
-    // Depois da transição o próximo slide já entrou — não reinicia enter (t≥0.4)
-    const enteredT = 0.4;
-    const tStart = s === 0 ? 0 : enteredT;
-
-    for (let i = 0; i < bodyFramesShot; i += 1) {
-      const u = i / (bodyFramesShot - 1 || 1);
-      const t = tStart + (1 - tStart) * u;
+    // Apaga no fim junto com a música, em vez de cortar seco no último frame.
+    const remaining = totalFramesFinal - frame;
+    if (remaining <= fadeOutFrames) {
+      const k = 1 - remaining / fadeOutFrames;
+      ctx.save();
+      ctx.globalAlpha = clamp(easeInOutCubic(k), 0, 1);
       ctx.fillStyle = "#050f28";
       ctx.fillRect(0, 0, width, height);
-      drawShotContent(ctx, shot, t, width, height, courtLayer);
-      drawVignette(ctx, width, height);
-      drawChrome(ctx, width, height, logo);
+      ctx.restore();
+    }
+    await sink.addFrame(frame);
+    frame += 1;
+    onProgress?.(Math.min(0.97, (frame / totalFramesFinal) * 0.97));
+  };
+
+  try {
+    for (let i = 0; i < introFrames; i += 1) {
+      const t = i / (introFrames - 1 || 1);
+      drawArtCard(ctx, backdrop, width, height, t, "");
+      if (t < 0.08) drawFlash(ctx, width, height, 0.22 * (1 - t / 0.08));
       await commitFrame();
     }
 
-    if (next && transitionFrames > 0) {
-      snapCtx.drawImage(canvas, 0, 0);
+    for (let s = 0; s < shots.length; s += 1) {
+      const shot = shots[s];
+      const next = shots[s + 1];
+      const slideFrames = slideFrameCounts[s];
+      const transitionFrames = next
+        ? Math.min(Math.round(fps * 0.5), Math.max(6, Math.floor(slideFrames * 0.2)))
+        : 0;
+      const bodyFramesShot = slideFrames - transitionFrames;
+      // Depois da transição o próximo slide já entrou — não reinicia enter (t≥0.4)
+      const enteredT = 0.4;
+      const tStart = s === 0 ? 0 : enteredT;
 
-      for (let i = 0; i < transitionFrames; i += 1) {
-        const tp = i / (transitionFrames - 1 || 1);
-        const e = easeInOutCubic(tp);
-        // Próximo mural já “cheio” — só revela via transição, sem re-entrar pins
-        const nextT = enteredT;
-        ctx.fillStyle = "#050f28";
-        ctx.fillRect(0, 0, width, height);
-
-        if (shot.transition === "whip" || shot.transition === "whipV") {
-          const vertical = shot.transition === "whipV";
-          const travel = vertical ? height : width;
-          ctx.drawImage(snap, vertical ? 0 : -travel * e * 0.92, vertical ? -travel * e * 0.92 : 0);
-          ctx.save();
-          if (vertical) ctx.translate(0, travel * (1 - e));
-          else ctx.translate(travel * (1 - e), 0);
-          drawShotContent(ctx, next, nextT, width, height, courtLayer);
-          drawVignette(ctx, width, height);
-          drawChrome(ctx, width, height, logo);
-          ctx.restore();
-        } else if (shot.transition === "zoom" || shot.transition === "softZoom") {
-          const outScale = shot.transition === "softZoom" ? 1 + e * 0.1 : 1 + e * 0.16;
-          const inScale = shot.transition === "softZoom" ? 0.94 + e * 0.06 : 0.88 + e * 0.12;
-          ctx.save();
-          ctx.globalAlpha = 1 - e;
-          ctx.translate(width / 2, height / 2);
-          ctx.scale(outScale, outScale);
-          ctx.translate(-width / 2, -height / 2);
-          ctx.drawImage(snap, 0, 0);
-          ctx.restore();
-          ctx.save();
-          ctx.globalAlpha = e;
-          ctx.translate(width / 2, height / 2);
-          ctx.scale(inScale, inScale);
-          ctx.translate(-width / 2, -height / 2);
-          drawShotContent(ctx, next, nextT, width, height, courtLayer);
-          drawVignette(ctx, width, height);
-          drawChrome(ctx, width, height, logo);
-          ctx.restore();
-        } else if (shot.transition === "crossBlur") {
-          ctx.save();
-          ctx.globalAlpha = 1 - e;
-          ctx.drawImage(snap, 0, 0);
-          const smear = Math.sin(e * Math.PI);
-          ctx.globalAlpha = 0.22 * smear;
-          for (let k = 1; k <= 3; k += 1) {
-            ctx.drawImage(snap, k * 6 * smear, k * 3 * smear);
-            ctx.drawImage(snap, -k * 6 * smear, -k * 2 * smear);
-          }
-          ctx.restore();
-          ctx.save();
-          ctx.globalAlpha = e;
-          drawShotContent(ctx, next, nextT, width, height, courtLayer);
-          drawVignette(ctx, width, height);
-          drawChrome(ctx, width, height, logo);
-          ctx.restore();
-        } else {
-          ctx.drawImage(snap, 0, 0);
-          ctx.save();
-          ctx.globalAlpha = easeInOut(tp);
-          drawShotContent(ctx, next, nextT, width, height, courtLayer);
-          drawVignette(ctx, width, height);
-          drawChrome(ctx, width, height, logo);
-          ctx.restore();
-        }
-
+      for (let i = 0; i < bodyFramesShot; i += 1) {
+        const u = i / (bodyFramesShot - 1 || 1);
+        const t = tStart + (1 - tStart) * u;
+        drawPhotoLayer(currentCtx, shot, width, height, t);
+        ctx.drawImage(backdrop, 0, 0);
+        ctx.drawImage(current, 0, 0);
         await commitFrame();
       }
+
+      if (next && transitionFrames > 0) {
+        /**
+         * O próximo slide entra "cheio" e não muda durante a transição, então a
+         * camada dele é desenhada uma vez só. `current` já tem o slide que está
+         * saindo, no último estado.
+         */
+        drawPhotoLayer(incomingCtx, next, width, height, enteredT);
+
+        for (let i = 0; i < transitionFrames; i += 1) {
+          const tp = i / (transitionFrames - 1 || 1);
+          const e = easeInOutCubic(tp);
+
+          // A arte é redesenhada sem transformação: quem se mexe são as fotos.
+          ctx.drawImage(backdrop, 0, 0);
+
+          if (shot.transition === "whip" || shot.transition === "whipV") {
+            const vertical = shot.transition === "whipV";
+            const travel = vertical ? height : width;
+            ctx.drawImage(
+              current,
+              vertical ? 0 : -travel * e,
+              vertical ? -travel * e : 0,
+            );
+            ctx.drawImage(
+              incoming,
+              vertical ? 0 : travel * (1 - e),
+              vertical ? travel * (1 - e) : 0,
+            );
+          } else if (shot.transition === "zoom" || shot.transition === "softZoom") {
+            const outScale = shot.transition === "softZoom" ? 1 + e * 0.12 : 1 + e * 0.2;
+            const inScale =
+              shot.transition === "softZoom" ? 0.92 + e * 0.08 : 0.85 + e * 0.15;
+            drawLayerScaled(ctx, current, width, height, outScale, 1 - e);
+            drawLayerScaled(ctx, incoming, width, height, inScale, e);
+          } else if (shot.transition === "crossBlur") {
+            const smear = Math.sin(e * Math.PI);
+            ctx.save();
+            ctx.globalAlpha = 1 - e;
+            ctx.drawImage(current, 0, 0);
+            ctx.globalAlpha = (1 - e) * 0.25 * smear;
+            for (let k = 1; k <= 3; k += 1) {
+              ctx.drawImage(current, k * 7 * smear, k * 4 * smear);
+              ctx.drawImage(current, -k * 7 * smear, -k * 3 * smear);
+            }
+            ctx.restore();
+            ctx.save();
+            ctx.globalAlpha = e;
+            ctx.drawImage(incoming, 0, 0);
+            ctx.restore();
+          } else {
+            ctx.save();
+            ctx.globalAlpha = 1 - easeInOut(tp);
+            ctx.drawImage(current, 0, 0);
+            ctx.globalAlpha = easeInOut(tp);
+            ctx.drawImage(incoming, 0, 0);
+            ctx.restore();
+          }
+
+          await commitFrame();
+        }
+      }
     }
+
+    for (let i = 0; i < outroFrames; i += 1) {
+      const t = i / (outroFrames - 1 || 1);
+      drawArtCard(ctx, backdrop, width, height, t, "OBRIGADO");
+      await commitFrame();
+    }
+  } catch (err) {
+    sink.abort();
+    throw err;
   }
 
-  for (let i = 0; i < outroFrames; i += 1) {
-    const t = i / (outroFrames - 1 || 1);
-    const beatPulse = Math.max(0, 1 - (((i / fps) % beatSec) / beatSec) * 5);
-    drawTitleCard(ctx, width, height, "OBRIGADO", "", logo, t, beatPulse);
-    await commitFrame();
-  }
-
-  music.master.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.2);
-  await wait(40);
-  recorder.stop();
-  music.stop();
-  videoStream.getTracks().forEach((track) => track.stop());
-  music.dest.stream.getTracks().forEach((track) => track.stop());
-  const blob = await done;
-  await audioCtx.close();
+  onProgress?.(0.98);
+  await yieldToUi();
+  const blob = await sink.finish();
   onProgress?.(1);
-  return blob;
+  return { blob, extension: sink.extension };
 }

@@ -3,10 +3,10 @@
 import { useEffect, useRef, useState } from "react";
 import {
   bestFaceMatch,
+  buildFaceQuery,
   detectFaceScore,
   distanceToScore,
   getAlbumFaces,
-  getPrimaryDescriptor,
   isMatch,
   loadFaceModels,
   loadImage,
@@ -26,14 +26,38 @@ import {
   matchQueryAgainstIndex,
   prefetchFaceIndex,
 } from "@/lib/faceIndex";
+import { loadArcFace } from "@/lib/arcface";
+import { dropBurstDuplicates } from "@/lib/bursts";
 import { mapPool } from "@/lib/pool";
+import { zipPhotos } from "@/lib/zip";
 import type { AppStep, MatchResult, PhotoItem } from "@/lib/types";
-import { renderAnniversaryVideo } from "@/lib/video";
+import {
+  MAX_VIDEO_SEC,
+  prepareClips,
+  releaseClips,
+  renderAnniversaryVideo,
+} from "@/lib/video";
 
 type Props = {
   initialPhotos: PhotoItem[];
   photoHint: string | null;
 };
+
+/** Frames da câmera fundidos numa query — cobre piscada, contraluz e ângulo. */
+const SELFIE_FRAMES = 4;
+
+/** Cópia leve do frame atual do vídeo (o detector reduz pra 416 de qualquer jeito). */
+function grabFrame(video: HTMLVideoElement, maxSide = 640): HTMLCanvasElement {
+  const vw = video.videoWidth || 720;
+  const vh = video.videoHeight || 720;
+  const scale = Math.min(1, maxSide / Math.max(vw, vh));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(vw * scale));
+  canvas.height = Math.max(1, Math.round(vh * scale));
+  const ctx = canvas.getContext("2d", { alpha: false });
+  if (ctx) ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  return canvas;
+}
 
 export function Experience({ initialPhotos, photoHint }: Props) {
   const [step, setStep] = useState<AppStep>("hero");
@@ -48,12 +72,17 @@ export function Experience({ initialPhotos, photoHint }: Props) {
   const [scanLabel, setScanLabel] = useState("Preparando...");
   const [renderProgress, setRenderProgress] = useState(0);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const [videoExt, setVideoExt] = useState("mp4");
+  const [canShareVideo, setCanShareVideo] = useState(false);
+  const [sharing, setSharing] = useState(false);
+  const videoFileRef = useRef<File | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [cameraOn, setCameraOn] = useState(false);
   const [captureHint, setCaptureHint] = useState("Posicione o rosto");
   const [faceLock, setFaceLock] = useState(0);
   const [autoCapture, setAutoCapture] = useState(false);
   const [zipping, setZipping] = useState(false);
+  const [zipLabel, setZipLabel] = useState("");
   const [renderLabel, setRenderLabel] = useState("Montando o vídeo");
   const [savedSession, setSavedSession] = useState<{
     count: number;
@@ -66,6 +95,9 @@ export function Experience({ initialPhotos, photoHint }: Props) {
   const streamRef = useRef<MediaStream | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const capturingRef = useRef(false);
+  /** Frames bons da câmera — fundidos num descritor só, bem mais estável. */
+  const selfieFramesRef = useRef<HTMLCanvasElement[]>([]);
+  const captureRef = useRef<() => void>(() => {});
   const selfieUrlRef = useRef<string | null>(null);
   const faceHitsRef = useRef(0);
 
@@ -139,18 +171,22 @@ export function Experience({ initialPhotos, photoHint }: Props) {
 
         if (score >= 0.6) {
           faceHitsRef.current += 1;
-          const progress = Math.min(1, faceHitsRef.current / 4);
+          if (selfieFramesRef.current.length < SELFIE_FRAMES) {
+            selfieFramesRef.current.push(grabFrame(video));
+          }
+          const progress = Math.min(1, faceHitsRef.current / SELFIE_FRAMES);
           setFaceLock(progress);
           setCaptureHint(
             progress >= 1 ? "Capturando..." : "Rosto ok — segure um instante",
           );
-          if (faceHitsRef.current >= 4) {
+          if (faceHitsRef.current >= SELFIE_FRAMES) {
             setAutoCapture(false);
-            captureFromCamera();
+            captureRef.current();
             return;
           }
         } else {
           faceHitsRef.current = 0;
+          selfieFramesRef.current = [];
           setFaceLock(0);
           setCaptureHint("Olhe pra câmera");
         }
@@ -166,13 +202,143 @@ export function Experience({ initialPhotos, photoHint }: Props) {
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step, cameraOn, modelsReady, autoCapture]);
+
+  async function runMatch(url: string, frames: HTMLCanvasElement[] = []) {
+    setError(null);
+    setStep("scanning");
+    setScanProgress(0);
+    setMatches([]);
+    setCacheHits(0);
+    const started = performance.now();
+
+    try {
+      if (photos.length === 0) {
+        throw new Error(
+          hint ??
+            "Nenhuma foto no projeto ainda. Configure R2 ou coloque imagens em web/public/photos.",
+        );
+      }
+
+      setScanLabel("Carregando reconhecimento...");
+      setScanProgress(0.05);
+
+      // Paraleliza selfie + índice + modelo. O ArcFace tem ~12MB: no 4G isso
+      // demora, e sem rótulo próprio parecia que o app tinha travado.
+      const [selfie, faceIndex] = await Promise.all([
+        loadImage(url),
+        loadFaceIndex(),
+        loadArcFace(),
+      ]);
+      setScanProgress(0.15);
+      setScanLabel("Lendo seu rosto...");
+
+      // Vários frames + versão espelhada = descritor bem mais estável
+      const query = await buildFaceQuery(frames.length > 0 ? frames : [selfie]);
+      if (!query) {
+        throw new Error("Não achei um rosto nítido na selfie. Tente de novo com mais luz.");
+      }
+      setScanProgress(0.25);
+
+      let found: MatchResult[] = [];
+      let hits = 0;
+
+      if (faceIndex && faceIndex.count > 0) {
+        // Caminho rápido online: só compara vetores (~1s), sem baixar 400MB
+        setScanLabel(`Comparando · ${faceIndex.count} fotos`);
+        const run = matchQueryAgainstIndex(
+          query,
+          photos,
+          faceIndex.index,
+          (ratio) => setScanProgress(0.25 + ratio * 0.7),
+        );
+        found = run.matches;
+        if (run.query.expanded > 0) {
+          setScanLabel(`Refinado com ${run.query.expanded} fotos suas`);
+        }
+        hits = faceIndex.count;
+        setCacheHits(hits);
+      } else {
+        // Fallback local (sem faces.json): paralelo, mas bem mais lento
+        setScanLabel("Índice ausente · analisando fotos...");
+        const cores = typeof navigator !== "undefined" ? navigator.hardwareConcurrency || 4 : 4;
+        const concurrency = Math.min(6, Math.max(3, Math.floor(cores / 2)));
+
+        const rows = await mapPool(
+          photos,
+          concurrency,
+          async (photo) => {
+            try {
+              let faces = await getPhotoFaces(photo.id);
+              if (faces) {
+                hits += 1;
+                setCacheHits(hits);
+              } else {
+                const img = await loadImage(photo.src);
+                faces = await getAlbumFaces(img);
+                await putPhotoFaces(photo.id, faces);
+              }
+              if (faces.length === 0) return null;
+              const best = bestFaceMatch(query, faces);
+              if (best && Number.isFinite(best.distance) && isMatch(best.distance, best.face)) {
+                return {
+                  photo,
+                  distance: best.distance,
+                  score: distanceToScore(best.distance),
+                  face: best.face,
+                } satisfies MatchResult;
+              }
+              return null;
+            } catch {
+              return null;
+            }
+          },
+          (done, total) => {
+            setScanProgress(0.25 + (done / total) * 0.7);
+            setScanLabel(`Analisando · ${done}/${total}`);
+          },
+        );
+        found = rows.filter((row): row is MatchResult => row !== null);
+        found.sort((a, b) => a.distance - b.distance);
+      }
+
+      setScanProgress(0.98);
+      const elapsed = ((performance.now() - started) / 1000).toFixed(1);
+      setScanLabel(`Pronto em ${elapsed}s`);
+
+      const nextSelected = found.slice(0, 24).map((m) => m.photo.id);
+      setMatches(found);
+      setSelectedIds(nextSelected);
+      setCacheHits(hits);
+
+      const selfieBlob = await blobFromObjectUrl(url);
+      if (selfieBlob) {
+        await saveMatchSession({
+          albumKey: albumKey(photos),
+          matches: found,
+          selectedIds: nextSelected,
+          selfieBlob,
+        });
+        setSavedSession({ count: found.length, savedAt: Date.now() });
+      }
+
+      setStep("results");
+    } catch (err) {
+      capturingRef.current = false;
+      setAutoCapture(false);
+      stopCamera();
+      setError(err instanceof Error ? err.message : "Erro no reconhecimento");
+      setStep("capture");
+      setCaptureHint("Toque em tentar de novo");
+      setFaceLock(0);
+    }
+  }
 
   async function startCamera() {
     setError(null);
     capturingRef.current = false;
     faceHitsRef.current = 0;
+    selfieFramesRef.current = [];
     setFaceLock(0);
     setCaptureHint("Olhe pra câmera");
     setAutoCapture(true);
@@ -229,17 +395,24 @@ export function Experience({ initialPhotos, photoHint }: Props) {
         const url = URL.createObjectURL(blob);
         selfieUrlRef.current = url;
         setSelfieUrl(url);
+        const frames = selfieFramesRef.current.slice();
         stopCamera();
-        void runMatch(url);
+        void runMatch(url, frames);
       },
       "image/jpeg",
       0.92,
     );
   }
 
+  // O loop de auto-captura roda num efeito declarado antes desta função.
+  useEffect(() => {
+    captureRef.current = captureFromCamera;
+  });
+
   function onFile(file: File | undefined) {
     if (!file) return;
     capturingRef.current = true;
+    selfieFramesRef.current = [];
     setAutoCapture(false);
     if (selfieUrlRef.current) URL.revokeObjectURL(selfieUrlRef.current);
     const url = URL.createObjectURL(file);
@@ -249,128 +422,23 @@ export function Experience({ initialPhotos, photoHint }: Props) {
     void runMatch(url);
   }
 
-  async function runMatch(url: string) {
-    setError(null);
-    setStep("scanning");
-    setScanProgress(0);
-    setMatches([]);
-    setCacheHits(0);
-    const started = performance.now();
-
+  /** Abre a folha nativa de compartilhamento com o MP4 (Instagram, WhatsApp...). */
+  async function shareVideo() {
+    const file = videoFileRef.current;
+    if (!file) return;
+    setSharing(true);
     try {
-      if (photos.length === 0) {
-        throw new Error(
-          hint ??
-            "Nenhuma foto no projeto ainda. Configure R2 ou coloque imagens em web/public/photos.",
-        );
-      }
-
-      setScanLabel("Carregando índice facial...");
-      setScanProgress(0.05);
-
-      // Paraleliza: selfie + faces.json
-      const [selfie, faceIndex] = await Promise.all([
-        loadImage(url),
-        loadFaceIndex(),
-      ]);
-      setScanProgress(0.15);
-      setScanLabel("Lendo seu rosto...");
-
-      const query = await getPrimaryDescriptor(selfie);
-      if (!query) {
-        throw new Error("Não achei um rosto nítido na selfie. Tente de novo com mais luz.");
-      }
-      setScanProgress(0.25);
-
-      let found: MatchResult[] = [];
-      let hits = 0;
-
-      if (faceIndex && faceIndex.count > 0) {
-        // Caminho rápido online: só compara vetores (~1s), sem baixar 400MB
-        setScanLabel(`Comparando · ${faceIndex.count} fotos`);
-        found = matchQueryAgainstIndex(query, photos, faceIndex.index, (done, total) => {
-          setScanProgress(0.25 + (done / total) * 0.7);
-          if (done % 50 === 0) setScanLabel(`Comparando · ${done}/${total}`);
-        });
-        hits = faceIndex.count;
-        setCacheHits(hits);
-      } else {
-        // Fallback local (sem faces.json): paralelo, mas bem mais lento
-        setScanLabel("Índice ausente · analisando fotos...");
-        const cores = typeof navigator !== "undefined" ? navigator.hardwareConcurrency || 4 : 4;
-        const concurrency = Math.min(6, Math.max(3, Math.floor(cores / 2)));
-
-        const rows = await mapPool(
-          photos,
-          concurrency,
-          async (photo) => {
-            try {
-              let faces = await getPhotoFaces(photo.id);
-              if (faces) {
-                hits += 1;
-                setCacheHits(hits);
-              } else {
-                const img = await loadImage(photo.src);
-                faces = await getAlbumFaces(img);
-                await putPhotoFaces(photo.id, faces);
-              }
-              if (faces.length === 0) return null;
-              const best = bestFaceMatch(query, faces);
-              if (
-                best &&
-                Number.isFinite(best.distance) &&
-                isMatch(best.distance, best.face, best.secondDistance)
-              ) {
-                return {
-                  photo,
-                  distance: best.distance,
-                  score: distanceToScore(best.distance),
-                  face: best.face,
-                } satisfies MatchResult;
-              }
-              return null;
-            } catch {
-              return null;
-            }
-          },
-          (done, total) => {
-            setScanProgress(0.25 + (done / total) * 0.7);
-            setScanLabel(`Analisando · ${done}/${total}`);
-          },
-        );
-        found = rows.filter((row): row is MatchResult => row !== null);
-        found.sort((a, b) => a.distance - b.distance);
-      }
-
-      setScanProgress(0.98);
-      const elapsed = ((performance.now() - started) / 1000).toFixed(1);
-      setScanLabel(`Pronto em ${elapsed}s`);
-
-      const nextSelected = found.slice(0, 24).map((m) => m.photo.id);
-      setMatches(found);
-      setSelectedIds(nextSelected);
-      setCacheHits(hits);
-
-      const selfieBlob = await blobFromObjectUrl(url);
-      if (selfieBlob) {
-        await saveMatchSession({
-          albumKey: albumKey(photos),
-          matches: found,
-          selectedIds: nextSelected,
-          selfieBlob,
-        });
-        setSavedSession({ count: found.length, savedAt: Date.now() });
-      }
-
-      setStep("results");
+      await navigator.share({
+        files: [file],
+        title: "Arretados 2 anos",
+        text: "Minha retrospectiva dos Arretados 🥳",
+      });
     } catch (err) {
-      capturingRef.current = false;
-      setAutoCapture(false);
-      stopCamera();
-      setError(err instanceof Error ? err.message : "Erro no reconhecimento");
-      setStep("capture");
-      setCaptureHint("Toque em tentar de novo");
-      setFaceLock(0);
+      // Cancelar no menu do sistema não é erro.
+      if (err instanceof DOMException && err.name === "AbortError") return;
+      setError("Não deu pra compartilhar. Use o botão Baixar.");
+    } finally {
+      setSharing(false);
     }
   }
 
@@ -423,11 +491,13 @@ export function Experience({ initialPhotos, photoHint }: Props) {
   }
 
   async function downloadZip() {
-    const ids =
-      selectedIds.length > 0
-        ? selectedIds
-        : matches.map((m) => m.photo.id);
-    if (ids.length === 0) {
+    const wanted = new Set(
+      selectedIds.length > 0 ? selectedIds : matches.map((m) => m.photo.id),
+    );
+    const chosen = matches
+      .filter((m) => wanted.has(m.photo.id))
+      .map((m) => m.photo);
+    if (chosen.length === 0) {
       setError("Nenhuma foto para baixar.");
       return;
     }
@@ -435,20 +505,13 @@ export function Experience({ initialPhotos, photoHint }: Props) {
     setError(null);
     setZipping(true);
     try {
-      const res = await fetch("/api/photos/zip", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ids }),
-      });
-      if (!res.ok) {
-        const data = (await res.json().catch(() => null)) as { error?: string } | null;
-        throw new Error(data?.error ?? "Falha ao gerar ZIP");
-      }
-      const blob = await res.blob();
+      const blob = await zipPhotos(chosen, (done, total) =>
+        setZipLabel(done < total ? `${done}/${total}` : "Compactando"),
+      );
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `arretados-fotos-${ids.length}.zip`;
+      a.download = `arretados-fotos-${chosen.length}.zip`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -457,6 +520,7 @@ export function Experience({ initialPhotos, photoHint }: Props) {
       setError(err instanceof Error ? err.message : "Falha ao baixar ZIP");
     } finally {
       setZipping(false);
+      setZipLabel("");
     }
   }
 
@@ -469,32 +533,59 @@ export function Experience({ initialPhotos, photoHint }: Props) {
     try {
       const selectedMatches = matches.filter((m) => selectedIds.includes(m.photo.id));
       const seen = new Set<string>();
-      const source = selectedMatches
-        .filter((m) => {
-          if (seen.has(m.photo.id)) return false;
-          seen.add(m.photo.id);
-          return true;
-        })
-        .slice(0, 48);
+      const unique = selectedMatches.filter((m) => {
+        if (seen.has(m.photo.id)) return false;
+        seen.add(m.photo.id);
+        return true;
+      });
+      // Rajada de câmera vira uma foto só — 25 quadros do mesmo segundo no
+      // vídeo parecem a mesma foto repetindo.
+      const source = dropBurstDuplicates(unique, (m) => m.photo.name).slice(0, 48);
       if (source.length === 0) {
         throw new Error("Selecione ao menos uma foto para o vídeo.");
       }
 
-      const clips = await Promise.all(
-        source.map(async (m) => ({
-          image: await loadImage(m.photo.src),
-          face: m.face,
-        })),
+      // Reduz as fotos antes do render — original de 13MP a 30fps trava o celular
+      setRenderLabel("Preparando as fotos...");
+      const clips = await prepareClips(
+        source.map((m) => ({ key: m.photo.id, src: m.photo.src, face: m.face })),
+        {
+          onProgress: (done, total) => {
+            setRenderProgress((done / total) * 0.2);
+            setRenderLabel(`Preparando fotos · ${done}/${total}`);
+          },
+        },
       );
-      const blob = await renderAnniversaryVideo({
-        clips,
-        durationSec: 58,
-        onProgress: setRenderProgress,
-      });
+      if (clips.length === 0) {
+        throw new Error("Não consegui carregar as fotos selecionadas.");
+      }
 
-      if (videoUrl) URL.revokeObjectURL(videoUrl);
-      setVideoUrl(URL.createObjectURL(blob));
-      setStep("video");
+      setRenderLabel("Montando retrospectiva...");
+      try {
+        const { blob, extension } = await renderAnniversaryVideo({
+          clips,
+          durationSec: MAX_VIDEO_SEC,
+          onProgress: (ratio) => setRenderProgress(0.2 + ratio * 0.8),
+        });
+
+        if (videoUrl) URL.revokeObjectURL(videoUrl);
+        const file = new File([blob], `arretados-2-anos.${extension}`, {
+          type: blob.type,
+        });
+        videoFileRef.current = file;
+        // Compartilhar arquivo é Web Share nível 2: existe no iOS e no Android,
+        // quase nunca no desktop. Sem suporte, sobra o botão de baixar.
+        setCanShareVideo(
+          typeof navigator !== "undefined" &&
+            typeof navigator.canShare === "function" &&
+            navigator.canShare({ files: [file] }),
+        );
+        setVideoUrl(URL.createObjectURL(blob));
+        setVideoExt(extension);
+        setStep("video");
+      } finally {
+        releaseClips(clips);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Falha ao gerar vídeo");
       setStep("results");
@@ -709,7 +800,7 @@ export function Experience({ initialPhotos, photoHint }: Props) {
                     disabled={zipping || selectedIds.length === 0}
                     onClick={() => void downloadZip()}
                   >
-                    {zipping ? "Gerando ZIP..." : "Baixar ZIP"}
+                    {zipping ? `Gerando ZIP ${zipLabel}` : "Baixar ZIP"}
                   </button>
                 )}
                 {matches.length > 0 && (
@@ -832,11 +923,23 @@ export function Experience({ initialPhotos, photoHint }: Props) {
               <h2 className="font-[family-name:var(--font-display)] text-3xl text-sand sm:text-4xl">
                 Seu vídeo
               </h2>
-              <div className="grid grid-cols-3 gap-2 sm:flex">
+              <div
+                className={`grid gap-2 sm:flex ${canShareVideo ? "grid-cols-2" : "grid-cols-3"}`}
+              >
+                {canShareVideo && (
+                  <button
+                    type="button"
+                    className="btn-primary col-span-2 sm:w-auto"
+                    disabled={sharing}
+                    onClick={() => void shareVideo()}
+                  >
+                    {sharing ? "Abrindo..." : "Compartilhar"}
+                  </button>
+                )}
                 <a
-                  className="btn-primary text-center sm:w-auto"
+                  className={`text-center sm:w-auto ${canShareVideo ? "btn-ghost" : "btn-primary"}`}
                   href={videoUrl}
-                  download="arretados-2-anos.webm"
+                  download={`arretados-2-anos.${videoExt}`}
                 >
                   Baixar
                 </a>

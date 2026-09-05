@@ -9,13 +9,16 @@
     "lint": "eslint",
     "upload:r2": "node scripts/upload-r2.mjs",
     "manifest:photos": "node scripts/make-manifest.mjs",
-    "faces:index": "node scripts/build-face-index.mjs"
+    "faces:index": "tsx scripts/build-face-index.ts",
+    "music:extract": "sh scripts/extract-music.sh"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1127.0",
     "@vladmandic/face-api": "^1.7.15",
-    "archiver": "^8.0.0",
+    "client-zip": "^2.5.0",
+    "mp4-muxer": "^5.2.2",
     "next": "16.3.4",
+    "onnxruntime-web": "^1.29.0",
     "react": "19.2.8",
     "react-dom": "19.2.8"
   },
@@ -25,14 +28,15 @@
     "@tailwindcss/postcss": "^4",
     "@tensorflow/tfjs": "^4.22.0",
     "@tensorflow/tfjs-backend-wasm": "^4.22.0",
-    "@types/archiver": "^8.0.0",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "dotenv": "^17.4.2",
     "eslint": "^9",
     "eslint-config-next": "16.3.4",
+    "onnxruntime-node": "^1.29.0",
     "tailwindcss": "^4",
+    "tsx": "^4.23.13",
     "typescript": "^5"
   }
 }
