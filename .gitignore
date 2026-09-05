@@ -1,0 +1,5 @@
+.venv/
+instagram_cookies.txt
+download-log.txt
+*.pem
+.DS_Store

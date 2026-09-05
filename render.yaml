@@ -1,0 +1,21 @@
+# Render Blueprint — https://render.com
+# Dashboard: New → Blueprint → conecte este repo
+# Ou: New → Web Service → root Directory: web
+
+services:
+  - type: web
+    name: arretados-2-anos
+    runtime: node
+    plan: free
+    rootDir: web
+    buildCommand: npm install && npm run build
+    startCommand: npm run start
+    healthCheckPath: /
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: NODE_ENV
+        value: production
+      # Sem CDN: deixe vazio e use public/photos no deploy
+      # - key: NEXT_PUBLIC_PHOTOS_BASE_URL
+      #   value: https://cdn.jsdelivr.net/gh/USER/arretados-photos@main

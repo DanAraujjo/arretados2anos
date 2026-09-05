@@ -1,0 +1,210 @@
+@import "tailwindcss";
+
+:root {
+  --sand: #f2e6c9;
+  --sand-deep: #d4a017;
+  --navy: #0a1f4d;
+  --navy-mid: #12306a;
+  --ocean: #1e4d9c;
+  --foam: #f7f4ee;
+  --gold: #f0c419;
+  --flame: #ff5a1f;
+  --ink: #061433;
+  --background: var(--navy);
+  --foreground: var(--foam);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-sand: var(--sand);
+  --color-sand-deep: var(--sand-deep);
+  --color-navy: var(--navy);
+  --color-navy-mid: var(--navy-mid);
+  --color-ocean: var(--ocean);
+  --color-foam: var(--foam);
+  --color-gold: var(--gold);
+  --color-flame: var(--flame);
+  --color-ink: var(--ink);
+  --font-display: var(--font-bebas);
+  --font-body: var(--font-sora);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100dvh;
+  max-height: 100dvh;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+body {
+  margin: 0;
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-body), system-ui, sans-serif;
+}
+
+@keyframes drift {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(2%, -1.5%, 0) scale(1.04);
+  }
+}
+
+@keyframes pulse-ring {
+  0% {
+    transform: scale(0.92);
+    opacity: 0.75;
+  }
+  70% {
+    transform: scale(1.18);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1.18);
+    opacity: 0;
+  }
+}
+
+@keyframes scan-line {
+  0% {
+    top: 8%;
+  }
+  50% {
+    top: 88%;
+  }
+  100% {
+    top: 8%;
+  }
+}
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+.animate-drift {
+  animation: drift 14s ease-in-out infinite;
+}
+
+.animate-pulse-ring {
+  animation: pulse-ring 2.2s ease-out infinite;
+}
+
+.animate-scan-line {
+  animation: scan-line 2.4s ease-in-out infinite;
+}
+
+.animate-fade-up {
+  animation: fade-up 0.7s ease-out both;
+}
+
+.brand-shimmer {
+  background: linear-gradient(
+    110deg,
+    var(--sand) 20%,
+    #fff6d8 45%,
+    var(--gold) 55%,
+    var(--sand) 80%
+  );
+  background-size: 220% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer 5s linear infinite;
+}
+
+@keyframes logo-glow {
+  0%,
+  100% {
+    filter: drop-shadow(0 0 0 rgba(240, 196, 25, 0));
+  }
+  50% {
+    filter: drop-shadow(0 0 28px rgba(240, 196, 25, 0.35));
+  }
+}
+
+.logo-glow {
+  animation: logo-glow 3.5s ease-in-out infinite;
+}
+
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border: 0;
+  border-radius: 999px;
+  min-height: 3.1rem;
+  padding: 0.9rem 1.6rem;
+  background: linear-gradient(135deg, var(--gold), var(--flame));
+  color: var(--ink);
+  font-weight: 700;
+  font-size: 1.05rem;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: transform 0.2s ease, filter 0.2s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.btn-primary:hover:not(:disabled) {
+  transform: translateY(-1px) scale(1.02);
+  filter: brightness(1.05);
+}
+
+.btn-primary:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border: 1px solid color-mix(in oklab, var(--foam) 28%, transparent);
+  border-radius: 999px;
+  min-height: 3.1rem;
+  padding: 0.9rem 1.35rem;
+  background: color-mix(in oklab, var(--navy-mid) 55%, transparent);
+  color: var(--foam);
+  font-weight: 600;
+  font-size: 1rem;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+  transition: border-color 0.2s ease, background 0.2s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.btn-ghost:hover:not(:disabled) {
+  border-color: color-mix(in oklab, var(--gold) 55%, transparent);
+  background: color-mix(in oklab, var(--navy-mid) 75%, transparent);
+}
+
+.btn-ghost:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
