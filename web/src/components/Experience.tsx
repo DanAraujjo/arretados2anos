@@ -430,7 +430,7 @@ export function Experience({ initialPhotos, photoHint }: Props) {
           seen.add(m.photo.id);
           return true;
         })
-        .slice(0, 20);
+        .slice(0, 48);
       if (source.length === 0) {
         throw new Error("Selecione ao menos uma foto para o vídeo.");
       }
@@ -443,7 +443,7 @@ export function Experience({ initialPhotos, photoHint }: Props) {
       );
       const blob = await renderAnniversaryVideo({
         clips,
-        durationSec: 25,
+        durationSec: 58,
         onProgress: setRenderProgress,
       });
 

@@ -19,12 +19,20 @@ export type RenderVideoOptions = {
 };
 
 type SubjectKind = "portrait" | "group" | "scene";
-type ShotKind = "kenBurns" | "pushIn" | "pullOut" | "driftH" | "driftDiag" | "camera";
+type ShotKind =
+  | "kenBurns"
+  | "pushIn"
+  | "pullOut"
+  | "driftH"
+  | "driftDiag"
+  | "camera"
+  | "collage";
 type TransitionKind = "fade" | "zoom" | "whip" | "motionBlur";
 
 type PlannedShot = {
   kind: ShotKind;
   clip: VideoClip;
+  clips?: VideoClip[];
   subject: SubjectKind;
   beats: number;
   transition: TransitionKind;
@@ -33,16 +41,16 @@ type PlannedShot = {
 };
 
 const SHOT_CYCLE: ShotKind[] = [
+  "collage",
   "kenBurns",
   "pushIn",
   "driftH",
   "pullOut",
+  "kenBurns",
+  "collage",
   "driftDiag",
   "camera",
-  "pushIn",
   "kenBurns",
-  "driftDiag",
-  "pullOut",
 ];
 
 const TRANSITIONS: TransitionKind[] = ["fade", "zoom", "whip", "motionBlur", "fade", "zoom", "whip"];
@@ -496,6 +504,214 @@ function motionForShot(shot: PlannedShot, t: number) {
   };
 }
 
+function drawVolleyCourt(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  t: number,
+) {
+  const g = ctx.createLinearGradient(0, 0, 0, height);
+  g.addColorStop(0, "#0c2758");
+  g.addColorStop(0.55, "#0a1f4d");
+  g.addColorStop(1, "#071638");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, width, height);
+
+  ctx.save();
+  ctx.globalAlpha = 0.55;
+  ctx.strokeStyle = "rgba(247,244,238,0.28)";
+  ctx.lineWidth = Math.max(2, width * 0.003);
+  // sidelines
+  ctx.strokeRect(width * 0.08, height * 0.12, width * 0.84, height * 0.7);
+  // attack lines
+  ctx.beginPath();
+  ctx.moveTo(width * 0.08, height * 0.3);
+  ctx.lineTo(width * 0.92, height * 0.3);
+  ctx.moveTo(width * 0.08, height * 0.64);
+  ctx.lineTo(width * 0.92, height * 0.64);
+  ctx.stroke();
+  // center line (gold)
+  ctx.strokeStyle = "rgba(240,196,25,0.55)";
+  ctx.lineWidth = Math.max(3, width * 0.004);
+  ctx.beginPath();
+  ctx.moveTo(width * 0.08, height * 0.47);
+  ctx.lineTo(width * 0.92, height * 0.47);
+  ctx.stroke();
+  // center circle
+  ctx.beginPath();
+  ctx.arc(width * 0.5, height * 0.47, width * 0.09, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+
+  // net
+  ctx.save();
+  ctx.globalAlpha = 0.4;
+  const netY = height * 0.455;
+  const netH = height * 0.045;
+  ctx.fillStyle = "rgba(247,244,238,0.08)";
+  ctx.fillRect(width * 0.06, netY, width * 0.88, netH);
+  ctx.strokeStyle = "rgba(240,196,25,0.5)";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(width * 0.06, netY, width * 0.88, netH);
+  ctx.beginPath();
+  for (let x = width * 0.08; x < width * 0.92; x += width * 0.028) {
+    ctx.moveTo(x, netY);
+    ctx.lineTo(x, netY + netH);
+  }
+  for (let y = netY; y < netY + netH; y += netH / 3) {
+    ctx.moveTo(width * 0.06, y);
+    ctx.lineTo(width * 0.94, y);
+  }
+  ctx.strokeStyle = "rgba(247,244,238,0.25)";
+  ctx.stroke();
+  ctx.restore();
+
+  // soft ball watermark
+  const ballR = width * 0.11;
+  const bx = width * 0.86;
+  const by = height * 0.16 + Math.sin(t * Math.PI) * height * 0.01;
+  ctx.save();
+  ctx.globalAlpha = 0.18;
+  ctx.beginPath();
+  ctx.arc(bx, by, ballR, 0, Math.PI * 2);
+  ctx.fillStyle = "#f7f4ee";
+  ctx.fill();
+  ctx.strokeStyle = "#f0c419";
+  ctx.lineWidth = 3;
+  ctx.stroke();
+  ctx.restore();
+
+  ctx.fillStyle = "rgba(240,196,25,0.85)";
+  ctx.font = `700 ${Math.floor(width * 0.055)}px Bebas Neue, Impact, sans-serif`;
+  ctx.textAlign = "left";
+  ctx.fillText("MURAL ARRETADOS", width * 0.08, height * 0.09);
+}
+
+type PinLayout = { x: number; y: number; w: number; h: number; rot: number };
+
+function collageLayouts(count: number): PinLayout[] {
+  const presets: PinLayout[][] = [
+    [{ x: 0.18, y: 0.28, w: 0.64, h: 0.42, rot: -2 }],
+    [
+      { x: 0.08, y: 0.22, w: 0.42, h: 0.38, rot: -4 },
+      { x: 0.5, y: 0.34, w: 0.42, h: 0.38, rot: 3 },
+    ],
+    [
+      { x: 0.08, y: 0.2, w: 0.4, h: 0.34, rot: -3 },
+      { x: 0.52, y: 0.18, w: 0.4, h: 0.34, rot: 2.5 },
+      { x: 0.28, y: 0.48, w: 0.44, h: 0.32, rot: -1.5 },
+    ],
+    [
+      { x: 0.06, y: 0.18, w: 0.42, h: 0.3, rot: -3.5 },
+      { x: 0.52, y: 0.16, w: 0.42, h: 0.3, rot: 2.8 },
+      { x: 0.1, y: 0.48, w: 0.38, h: 0.3, rot: 2 },
+      { x: 0.52, y: 0.5, w: 0.38, h: 0.3, rot: -2.2 },
+    ],
+    [
+      { x: 0.05, y: 0.16, w: 0.36, h: 0.28, rot: -4 },
+      { x: 0.42, y: 0.14, w: 0.28, h: 0.26, rot: 2 },
+      { x: 0.68, y: 0.2, w: 0.28, h: 0.3, rot: 3.5 },
+      { x: 0.1, y: 0.46, w: 0.4, h: 0.32, rot: -1.8 },
+      { x: 0.54, y: 0.5, w: 0.38, h: 0.3, rot: 2.4 },
+    ],
+    [
+      { x: 0.05, y: 0.15, w: 0.3, h: 0.26, rot: -3 },
+      { x: 0.36, y: 0.13, w: 0.3, h: 0.26, rot: 2.2 },
+      { x: 0.67, y: 0.17, w: 0.28, h: 0.28, rot: -2 },
+      { x: 0.08, y: 0.44, w: 0.32, h: 0.3, rot: 2.8 },
+      { x: 0.4, y: 0.46, w: 0.28, h: 0.28, rot: -1.5 },
+      { x: 0.68, y: 0.48, w: 0.28, h: 0.28, rot: 3 },
+    ],
+  ];
+  const n = clamp(count, 1, 6);
+  return presets[n - 1];
+}
+
+function drawPinnedPhoto(
+  ctx: CanvasRenderingContext2D,
+  clip: VideoClip,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  rotDeg: number,
+  appear: number,
+) {
+  const a = clamp(appear, 0, 1);
+  if (a <= 0) return;
+  const pop = 0.86 + easeOutBack(a) * 0.14;
+
+  ctx.save();
+  ctx.globalAlpha = a;
+  ctx.translate(x + w / 2, y + h / 2);
+  ctx.rotate((rotDeg * Math.PI) / 180);
+  ctx.scale(pop, pop);
+  ctx.translate(-(x + w / 2), -(y + h / 2));
+
+  // polaroid plate
+  const pad = Math.min(w, h) * 0.045;
+  ctx.fillStyle = "#f7f4ee";
+  ctx.shadowColor = "rgba(0,0,0,0.4)";
+  ctx.shadowBlur = 18;
+  ctx.shadowOffsetY = 10;
+  ctx.fillRect(x - pad, y - pad, w + pad * 2, h + pad * 2.8);
+  ctx.shadowColor = "transparent";
+
+  // tape
+  ctx.fillStyle = "rgba(240,196,25,0.55)";
+  ctx.save();
+  ctx.translate(x + w * 0.18, y - pad * 0.2);
+  ctx.rotate(-0.15);
+  ctx.fillRect(-w * 0.12, -pad * 0.6, w * 0.24, pad * 1.1);
+  ctx.restore();
+  ctx.save();
+  ctx.translate(x + w * 0.82, y - pad * 0.1);
+  ctx.rotate(0.12);
+  ctx.fillRect(-w * 0.12, -pad * 0.6, w * 0.24, pad * 1.1);
+  ctx.restore();
+
+  const face = clip.face;
+  const cx = face?.cx ?? 0.5;
+  const cy = face?.cy ?? 0.42;
+  drawFramed(ctx, clip.image, x, y, w, h, face, 0.15, 1, (cx - 0.5) * 0.2, (cy - 0.5) * 0.15);
+
+  ctx.restore();
+}
+
+function drawCollageMural(
+  ctx: CanvasRenderingContext2D,
+  clips: VideoClip[],
+  width: number,
+  height: number,
+  t: number,
+) {
+  drawVolleyCourt(ctx, width, height, t);
+  const group = clips.slice(0, 6);
+  const layout = collageLayouts(group.length);
+  // Entrada lenta: fotos entram ao longo de ~70% do shot, depois seguram
+  const enterT = clamp(t / 0.7, 0, 1);
+  const stagger = 0.11;
+  const appearDur = 0.32;
+
+  for (let i = 0; i < group.length; i += 1) {
+    const pin = layout[i];
+    const appear = easeOutCubic(clamp((enterT - i * stagger) / appearDur, 0, 1));
+    const hold = clamp((t - 0.55) / 0.45, 0, 1);
+    const driftX = Math.sin((t * 0.7 + i * 0.37) * Math.PI) * width * 0.003;
+    const driftY = Math.cos((t * 0.7 + i * 0.29) * Math.PI) * height * 0.0025;
+    drawPinnedPhoto(
+      ctx,
+      group[i],
+      pin.x * width + driftX,
+      pin.y * height + driftY,
+      pin.w * width,
+      pin.h * height,
+      pin.rot + hold * (i % 2 === 0 ? -0.6 : 0.6),
+      appear,
+    );
+  }
+}
+
 function drawShotContent(
   ctx: CanvasRenderingContext2D,
   shot: PlannedShot,
@@ -503,6 +719,11 @@ function drawShotContent(
   width: number,
   height: number,
 ) {
+  if (shot.kind === "collage") {
+    drawCollageMural(ctx, shot.clips ?? [shot.clip], width, height, t);
+    return;
+  }
+
   const m = motionForShot(shot, t);
   drawFramed(
     ctx,
@@ -612,12 +833,10 @@ function uniqueClips(clips: VideoClip[]): VideoClip[] {
 }
 
 function planShots(clips: VideoClip[], bodyBeats: number): PlannedShot[] {
-  const pool = uniqueClips(clips);
-  if (pool.length === 0) return [];
+  const remaining = uniqueClips(clips);
+  if (remaining.length === 0) return [];
 
   const shots: PlannedShot[] = [];
-  let beatBudget = bodyBeats;
-  let photoIndex = 0;
   let style = 0;
   let lastKind: ShotKind | null = null;
 
@@ -630,45 +849,90 @@ function planShots(clips: VideoClip[], bodyBeats: number): PlannedShot[] {
     { x: -0.8, y: -0.35 },
   ];
 
-  while (beatBudget > 0) {
-    const clip = pool[photoIndex % pool.length];
-    photoIndex += 1;
-
+  while (remaining.length > 0) {
     let kind = SHOT_CYCLE[style % SHOT_CYCLE.length];
     style += 1;
     if (kind === lastKind) {
       kind = SHOT_CYCLE[style % SHOT_CYCLE.length];
       style += 1;
     }
-    lastKind = kind;
+
+    const dir = dirs[shots.length % dirs.length];
+
+    // Collage only with unused photos; never wrap/repeat
+    if (kind === "collage" && remaining.length >= 2) {
+      const count = Math.min(6, remaining.length);
+      const group = remaining.splice(0, count);
+      lastKind = "collage";
+      shots.push({
+        kind: "collage",
+        clip: group[0],
+        clips: group,
+        subject: "scene",
+        beats: 14,
+        transition: "fade",
+        dirX: dir.x,
+        dirY: dir.y,
+      });
+      continue;
+    }
+
+    if (kind === "collage") kind = "kenBurns";
+
+    const clip = remaining.shift();
+    if (!clip) break;
 
     const subject = classifySubject(clip.face);
-    // Groups prefer drift / kenBurns over hard push
     if (subject === "group" && (kind === "pushIn" || kind === "pullOut")) {
       kind = style % 2 === 0 ? "driftH" : "kenBurns";
     }
-
-    const dir = dirs[shots.length % dirs.length];
-    const beats = Math.min(kind === "camera" ? 3 : 4, beatBudget);
+    lastKind = kind;
 
     shots.push({
       kind,
       clip,
       subject,
-      beats,
+      beats: kind === "camera" ? 5 : 6,
       transition: TRANSITIONS[shots.length % TRANSITIONS.length],
       dirX: dir.x,
       dirY: dir.y,
     });
-    beatBudget -= beats;
+  }
 
-    // If we still have budget after one pass, keep cycling with new motions
-    if (photoIndex >= pool.length && beatBudget > 0 && photoIndex > pool.length * 3) {
-      // avoid endless loop with tiny leftover — consume rest on last shot
-      if (beatBudget < 2 && shots.length > 0) {
-        shots[shots.length - 1].beats += beatBudget;
-        beatBudget = 0;
+  // Tempo proporcional à qtd de fotos em cada shot (sem jogar o resto tudo no último)
+  const photoWeights = shots.map((s) => s.clips?.length ?? 1);
+  const totalPhotos = photoWeights.reduce((a, b) => a + b, 0);
+  if (shots.length > 0 && totalPhotos > 0 && bodyBeats > 0) {
+    const ideal = bodyBeats / totalPhotos;
+    // ~2–3s/foto a 128bpm; evita clip único absurdo
+    const minBeats = 3;
+    const maxBeatsPerPhoto = 8;
+
+    let assigned = 0;
+    for (let i = 0; i < shots.length; i += 1) {
+      const n = photoWeights[i];
+      const raw = Math.round(ideal * n);
+      const capped = Math.min(n * maxBeatsPerPhoto, Math.max(minBeats, raw));
+      shots[i].beats = capped;
+      assigned += capped;
+    }
+
+    // Ajuste fino: espalha a diferença em +1/−1 beats
+    let diff = bodyBeats - assigned;
+    let i = 0;
+    while (diff !== 0 && shots.length > 0 && i < shots.length * 4) {
+      const idx = i % shots.length;
+      const n = photoWeights[idx];
+      if (diff > 0) {
+        if (shots[idx].beats < n * maxBeatsPerPhoto) {
+          shots[idx].beats += 1;
+          diff -= 1;
+        }
+      } else if (shots[idx].beats > minBeats) {
+        shots[idx].beats -= 1;
+        diff += 1;
       }
+      i += 1;
     }
   }
 
@@ -718,7 +982,7 @@ export async function renderAnniversaryVideo({
   width = 1080,
   height = 1920,
   fps = 30,
-  durationSec = 25,
+  durationSec = 58,
   bpm = 128,
   musicUrl = "/music/party.mp3",
   onProgress,
@@ -806,8 +1070,8 @@ export async function renderAnniversaryVideo({
   }
   const totalFrames = introFrames + bodyFrames + outroFrames;
 
-  // Transitions ~1 beat — crisp and music-synced
-  const transitionFramesTarget = Math.max(4, Math.round(fps * beatSec * 0.85));
+  // Transitions ~1.75 beats — calmer, less abrupt
+  const transitionFramesTarget = Math.max(10, Math.round(fps * beatSec * 1.75));
 
   let frame = 0;
   const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -831,7 +1095,10 @@ export async function renderAnniversaryVideo({
     const next = shots[s + 1];
     const shotFrames = shotFrameCounts[s];
     const transitionFrames = next
-      ? Math.min(transitionFramesTarget, Math.floor(shotFrames * 0.35))
+      ? Math.min(
+          transitionFramesTarget * (shot.kind === "collage" || next.kind === "collage" ? 1.35 : 1),
+          Math.floor(shotFrames * (shot.kind === "collage" ? 0.28 : 0.42)),
+        )
       : 0;
     const transitionStart = shotFrames - transitionFrames;
 

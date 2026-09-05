@@ -208,3 +208,131 @@ body {
   opacity: 0.55;
   cursor: not-allowed;
 }
+
+/* Volleyball mural collage */
+.volley-mural {
+  border: 1px solid color-mix(in oklab, var(--gold) 28%, transparent);
+  background:
+    radial-gradient(ellipse 80% 50% at 50% 0%, rgba(240, 196, 25, 0.12), transparent 55%),
+    linear-gradient(180deg, #0c2758 0%, #0a1f4d 45%, #071638 100%);
+  box-shadow: inset 0 0 0 1px rgba(247, 244, 238, 0.04);
+}
+
+.volley-mural-court {
+  background-image:
+    linear-gradient(90deg, transparent 0 12%, rgba(247, 244, 238, 0.14) 12% 12.35%, transparent 12.35% 87.65%, rgba(247, 244, 238, 0.14) 87.65% 88%, transparent 88%),
+    linear-gradient(0deg, transparent 0 18%, rgba(247, 244, 238, 0.12) 18% 18.35%, transparent 18.35% 81.65%, rgba(247, 244, 238, 0.12) 81.65% 82%, transparent 82%),
+    linear-gradient(90deg, transparent 49.7%, rgba(240, 196, 25, 0.35) 49.7% 50.3%, transparent 50.3%),
+    radial-gradient(circle at 50% 50%, transparent 0 9%, rgba(247, 244, 238, 0.1) 9% 9.4%, transparent 9.4%);
+  opacity: 0.9;
+  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.55), rgba(0, 0, 0, 0.2) 70%, transparent);
+}
+
+.volley-mural-net {
+  background:
+    repeating-linear-gradient(
+      90deg,
+      transparent 0 10px,
+      rgba(247, 244, 238, 0.22) 10px 11px
+    ),
+    repeating-linear-gradient(
+      0deg,
+      transparent 0 10px,
+      rgba(247, 244, 238, 0.16) 10px 11px
+    );
+  border-top: 2px solid rgba(240, 196, 25, 0.55);
+  border-bottom: 2px solid rgba(240, 196, 25, 0.35);
+  opacity: 0.55;
+  transform: perspective(600px) rotateX(42deg);
+  transform-origin: top center;
+}
+
+.volley-mural-ball {
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 32% 28%, rgba(247, 244, 238, 0.55), transparent 35%),
+    conic-gradient(
+      from 20deg,
+      #f7f4ee 0 60deg,
+      #f0c419 60deg 120deg,
+      #f7f4ee 120deg 180deg,
+      #f0c419 180deg 240deg,
+      #f7f4ee 240deg 300deg,
+      #f0c419 300deg 360deg
+    );
+  box-shadow: inset 0 0 0 2px rgba(6, 20, 51, 0.25);
+}
+
+.photo-pin {
+  position: relative;
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  border: 0;
+  padding: 0;
+  background: #f7f4ee;
+  transform: rotate(var(--pin-rot, 0deg)) translateY(var(--pin-y, 0px));
+  box-shadow:
+    0 10px 24px rgba(0, 0, 0, 0.35),
+    0 1px 0 rgba(255, 255, 255, 0.35) inset;
+  cursor: pointer;
+  transition:
+    transform 0.25s ease,
+    filter 0.25s ease,
+    opacity 0.25s ease,
+    box-shadow 0.25s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.photo-pin img {
+  display: block;
+}
+
+.photo-pin-on {
+  outline: 3px solid var(--gold);
+  outline-offset: 1px;
+  filter: none;
+  opacity: 1;
+  z-index: 2;
+}
+
+.photo-pin-off {
+  filter: grayscale(0.85) brightness(0.78);
+  opacity: 0.72;
+}
+
+.photo-pin:hover {
+  z-index: 3;
+  filter: none;
+  opacity: 1;
+  transform: rotate(var(--pin-rot, 0deg)) translateY(var(--pin-y, 0px)) scale(1.04);
+}
+
+.photo-pin:focus-visible {
+  outline: 3px solid var(--gold);
+  outline-offset: 2px;
+}
+
+.photo-tape {
+  position: absolute;
+  z-index: 2;
+  top: -7px;
+  width: 42%;
+  height: 16px;
+  background: linear-gradient(
+    180deg,
+    rgba(240, 196, 25, 0.55),
+    rgba(240, 196, 25, 0.28)
+  );
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+.photo-tape-l {
+  left: 10%;
+  transform: rotate(-8deg);
+}
+
+.photo-tape-r {
+  right: 10%;
+  transform: rotate(7deg);
+}
