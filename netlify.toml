@@ -1,10 +1,18 @@
-# App Next.js está em /web
+# App Next.js em /web
+#
+# Painel Netlify (Site configuration → Build & deploy → Build settings):
+#   Base directory:     web
+#   Build command:      npm run build   (ou deixe vazio p/ usar este arquivo)
+#   Publish directory:  DEIXE VAZIO     (não use out, dist, public nem .next)
+# Depois: Deploys → Trigger deploy → Clear cache and deploy site
+#
 [build]
   base = "web"
   command = "npm run build"
-  # NÃO defina publish — o runtime Next da Netlify cuida disso
 
 [build.environment]
   NODE_VERSION = "22"
-  # Desliga standalone (incompatível com o adapter Netlify)
   NETLIFY = "true"
+
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
