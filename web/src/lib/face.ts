@@ -160,6 +160,51 @@ export async function getAllFaces(
     .filter((f) => f.confidence >= 0.32);
 }
 
+/**
+ * Versão rápida pro scan do álbum: redimensiona + só TinyFaceDetector.
+ * (~3–5× mais rápido que SSD em foto cheia; qualidade ok pra matching).
+ */
+export function resizeForScan(
+  img: HTMLImageElement,
+  maxSide = 512,
+): HTMLCanvasElement {
+  const iw = img.naturalWidth || img.width;
+  const ih = img.naturalHeight || img.height;
+  const scale = Math.min(1, maxSide / Math.max(iw, ih));
+  const w = Math.max(1, Math.round(iw * scale));
+  const h = Math.max(1, Math.round(ih * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d", { alpha: false });
+  if (!ctx) throw new Error("Canvas indisponível");
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "medium";
+  ctx.drawImage(img, 0, 0, w, h);
+  return canvas;
+}
+
+export async function getAlbumFaces(img: HTMLImageElement): Promise<DetectedFace[]> {
+  const fa = await api();
+  await loadFaceModels();
+  const canvas = resizeForScan(img, 512);
+  const detections = await fa
+    .detectAllFaces(
+      canvas,
+      new fa.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.38 }),
+    )
+    .withFaceLandmarks()
+    .withFaceDescriptors();
+
+  return detections
+    .map((d) => ({
+      descriptor: d.descriptor,
+      box: toFaceBox(d.detection.box, canvas.width, canvas.height),
+      confidence: d.detection.score,
+    }))
+    .filter((f) => f.confidence >= 0.34);
+}
+
 /** @deprecated use getAllFaces */
 export async function getAllDescriptors(
   input: HTMLImageElement | HTMLCanvasElement,

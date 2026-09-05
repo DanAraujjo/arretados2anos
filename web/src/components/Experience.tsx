@@ -5,7 +5,7 @@ import {
   bestFaceMatch,
   detectFaceScore,
   distanceToScore,
-  getAllFaces,
+  getAlbumFaces,
   getPrimaryDescriptor,
   isMatch,
   loadFaceModels,
@@ -21,6 +21,8 @@ import {
   putPhotoFaces,
   saveMatchSession,
 } from "@/lib/faceCache";
+import { hydrateFaceIndexFromCdn } from "@/lib/faceIndex";
+import { mapPool } from "@/lib/pool";
 import type { AppStep, MatchResult, PhotoItem } from "@/lib/types";
 import { renderAnniversaryVideo } from "@/lib/video";
 
@@ -83,6 +85,13 @@ export function Experience({ initialPhotos, photoHint }: Props) {
         const key = albumKey(list);
         const session = await peekMatchSession(key);
         if (!cancelled) setSavedSession(session);
+
+        // Pré-aquece cache a partir do faces.json (CDN) — torna o 1º scan rápido
+        void hydrateFaceIndexFromCdn().then((result) => {
+          if (!cancelled && result.loaded > 0) {
+            setScanLabel(`Índice pronto · ${result.loaded} fotos`);
+          }
+        });
       } catch {
         if (!cancelled) setHint("Não consegui listar as fotos do álbum.");
       } finally {
@@ -255,51 +264,65 @@ export function Experience({ initialPhotos, photoHint }: Props) {
         );
       }
 
+      setScanLabel("Preparando índice...");
+      const hydrated = await hydrateFaceIndexFromCdn();
+      if (hydrated.loaded > 0) {
+        setScanLabel(`Índice CDN · ${hydrated.loaded} fotos`);
+      }
+
       const selfie = await loadImage(url);
       const query = await getPrimaryDescriptor(selfie);
       if (!query) {
         throw new Error("Não achei um rosto nítido na selfie. Tente de novo com mais luz.");
       }
 
-      const found: MatchResult[] = [];
+      // Downloads em paralelo; detecção limitada (WebGL não escala bem)
+      const cores = typeof navigator !== "undefined" ? navigator.hardwareConcurrency || 4 : 4;
+      const concurrency = Math.min(4, Math.max(2, Math.floor(cores / 2)));
+
       let hits = 0;
+      const rows = await mapPool(
+        photos,
+        concurrency,
+        async (photo) => {
+          try {
+            let faces = await getPhotoFaces(photo.id);
+            if (faces) {
+              hits += 1;
+              setCacheHits(hits);
+              setScanLabel(`Cache · ${photo.name}`);
+            } else {
+              setScanLabel(`Analisando · ${photo.name}`);
+              const img = await loadImage(photo.src);
+              faces = await getAlbumFaces(img);
+              await putPhotoFaces(photo.id, faces);
+            }
 
-      for (let i = 0; i < photos.length; i += 1) {
-        const photo = photos[i];
-        setScanProgress((i + 1) / photos.length);
-
-        try {
-          let faces = await getPhotoFaces(photo.id);
-          if (faces) {
-            hits += 1;
-            setCacheHits(hits);
-            setScanLabel(`Cache · ${photo.name}`);
-          } else {
-            setScanLabel(`Analisando · ${photo.name}`);
-            const img = await loadImage(photo.src);
-            faces = await getAllFaces(img);
-            await putPhotoFaces(photo.id, faces);
+            if (faces.length === 0) return null;
+            const best = bestFaceMatch(query, faces);
+            if (
+              best &&
+              Number.isFinite(best.distance) &&
+              isMatch(best.distance, best.face, best.secondDistance)
+            ) {
+              return {
+                photo,
+                distance: best.distance,
+                score: distanceToScore(best.distance),
+                face: best.face,
+              } satisfies MatchResult;
+            }
+            return null;
+          } catch {
+            return null;
           }
+        },
+        (done, total) => {
+          setScanProgress(done / total);
+        },
+      );
 
-          if (faces.length === 0) continue;
-          const best = bestFaceMatch(query, faces);
-          if (
-            best &&
-            Number.isFinite(best.distance) &&
-            isMatch(best.distance, best.face, best.secondDistance)
-          ) {
-            found.push({
-              photo,
-              distance: best.distance,
-              score: distanceToScore(best.distance),
-              face: best.face,
-            });
-          }
-        } catch {
-          // skip broken images
-        }
-      }
-
+      const found = rows.filter((row): row is MatchResult => row !== null);
       found.sort((a, b) => a.distance - b.distance);
       const nextSelected = found.slice(0, 24).map((m) => m.photo.id);
       setMatches(found);

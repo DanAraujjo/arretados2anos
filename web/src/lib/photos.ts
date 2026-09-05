@@ -2,19 +2,11 @@ import { createReadStream, existsSync } from "fs";
 import { readdir } from "fs/promises";
 import path from "path";
 import type { PhotoItem } from "@/lib/types";
+import { photoPublicUrl, photosBaseUrl } from "@/lib/photos-url";
+
+export { photoPublicUrl, photosBaseUrl } from "@/lib/photos-url";
 
 const IMAGE_EXT = new Set([".jpg", ".jpeg", ".png", ".webp"]);
-
-export function photosBaseUrl() {
-  const raw = process.env.NEXT_PUBLIC_PHOTOS_BASE_URL?.trim();
-  if (!raw) return null;
-  return raw.replace(/\/$/, "");
-}
-
-export function photoPublicUrl(name: string, base = photosBaseUrl()) {
-  if (!base) return `/photos/${encodeURIComponent(name)}`;
-  return `${base}/${encodeURIComponent(name)}`;
-}
 
 function localPhotosDir() {
   return path.join(process.cwd(), "public", "photos");

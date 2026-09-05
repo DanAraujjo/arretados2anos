@@ -1,0 +1,34 @@
+---
+description: Vídeo retrospectiva ≤58s com slides calculados pela qtd de fotos
+globs: web/src/lib/video.ts, web/src/components/Experience.tsx
+alwaysApply: false
+---
+
+# Montagem de vídeo (Arretados)
+
+## Hard cap
+
+- Duração final do vídeo **nunca** pode passar de **58 segundos** (`MAX_VIDEO_SEC` em `web/src/lib/video.ts`).
+- Intro/outro curtos; o **corpo** recebe o tempo restante e é repartido entre os slides.
+
+## Cálculo automático pelo nº de fotos
+
+Ao planejar ou alterar a montagem, **calcular** slides e tempo a partir da quantidade de fotos — não inventar duração fixa por slide.
+
+Exemplo: **~40 fotos** → mira **~12–15 slides**, com **2–4 fotos simultâneas** e animação interna (Ken Burns / pan / push-in), **não** uma grade 2×2 estática repetida.
+
+Regras práticas:
+
+1. `slides ≈ fotos / 2.9`, limitado por `ceil(fotos/4)` (mínimo) e pelo tempo (mín. ~2.15s/slide).
+2. Cada slide tem **1–4 fotos**; layouts e movimentos **variam**.
+3. Fotos entram/saem e têm motion próprio dentro do slide.
+4. Transições suaves (fade / soft zoom / slide / blur leve) — sem cara de PowerPoint.
+5. Preferir mostrar **todas** as fotos selecionadas dentro do cap de 58s; se faltar tempo, **densificar colagens** (mais fotos por slide), não esticar o vídeo.
+
+## Onde está a lógica
+
+- `planGroupSizes(photoCount, bodySec)` → tamanhos por slide
+- `planShots(clips, bodySec)` → shots + pesos
+- `renderAnniversaryVideo` → hard cap de frames ≤ 58s
+
+Não reverter para “sempre 4 fotos × tempo igual” sem recalcular pelo total de fotos.

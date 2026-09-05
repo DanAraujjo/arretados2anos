@@ -123,6 +123,31 @@ export async function putPhotoFaces(photoId: string, faces: DetectedFace[]) {
   }
 }
 
+/** Grava várias fotos numa única transação (hidratar faces.json). */
+export async function putPhotoFacesBatch(
+  entries: Array<{ photoId: string; faces: DetectedFace[] }>,
+) {
+  if (entries.length === 0) return;
+  try {
+    const db = await openDb();
+    const tx = db.transaction(STORE_FACES, "readwrite");
+    const store = tx.objectStore(STORE_FACES);
+    const now = Date.now();
+    for (const { photoId, faces } of entries) {
+      store.put({
+        photoId,
+        version: FACE_CACHE_VERSION,
+        faces: facesToCache(faces),
+        updatedAt: now,
+      } satisfies PhotoFaceRecord);
+    }
+    await txDone(tx);
+    db.close();
+  } catch {
+    // best-effort
+  }
+}
+
 export async function prunePhotoFaces(validIds: Set<string>) {
   try {
     const db = await openDb();

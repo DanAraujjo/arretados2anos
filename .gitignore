@@ -3,3 +3,6 @@ instagram_cookies.txt
 download-log.txt
 *.pem
 .DS_Store
+
+# Local Netlify folder
+.netlify

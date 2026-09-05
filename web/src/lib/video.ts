@@ -19,41 +19,46 @@ export type RenderVideoOptions = {
 };
 
 type SubjectKind = "portrait" | "group" | "scene";
-type ShotKind =
-  | "kenBurns"
-  | "pushIn"
-  | "pullOut"
-  | "driftH"
-  | "driftDiag"
-  | "camera"
-  | "collage";
-type TransitionKind = "fade" | "zoom" | "whip" | "motionBlur";
+type ShotKind = "collage";
+type TransitionKind = "fade" | "zoom" | "whip" | "whipV" | "softZoom" | "crossBlur";
+type PinMotion = "pushIn" | "pullOut" | "panH" | "panV" | "kenBurns" | "drift";
 
 type PlannedShot = {
   kind: ShotKind;
   clip: VideoClip;
-  clips?: VideoClip[];
+  clips: VideoClip[];
   subject: SubjectKind;
-  beats: number;
   transition: TransitionKind;
+  layoutVariant: number;
+  motions: PinMotion[];
   dirX: number;
   dirY: number;
+  weight: number;
 };
 
-const SHOT_CYCLE: ShotKind[] = [
-  "collage",
-  "kenBurns",
-  "pushIn",
-  "driftH",
-  "pullOut",
-  "kenBurns",
-  "collage",
-  "driftDiag",
-  "camera",
-  "kenBurns",
+const TRANSITIONS: TransitionKind[] = [
+  "softZoom",
+  "fade",
+  "whip",
+  "crossBlur",
+  "zoom",
+  "whipV",
+  "softZoom",
+  "fade",
 ];
 
-const TRANSITIONS: TransitionKind[] = ["fade", "zoom", "whip", "motionBlur", "fade", "zoom", "whip"];
+const MOTION_CYCLE: PinMotion[] = [
+  "pushIn",
+  "kenBurns",
+  "panH",
+  "pullOut",
+  "drift",
+  "panV",
+  "kenBurns",
+  "pushIn",
+];
+
+const SIZE_CYCLE = [1, 3, 2, 4, 2, 1, 3, 4];
 
 function easeInOut(t: number) {
   return t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2;
@@ -100,15 +105,17 @@ function maxFraming(subject: SubjectKind, face?: FaceBox) {
 }
 
 function softApproach(t: number, hold: number, max: number) {
-  if (t <= hold) return 0;
-  return easeInOutCubic((t - hold) / (1 - hold)) * max;
+  // Quase sem “freeze” no início — já começa a mover
+  const h = Math.min(hold, 0.06);
+  if (t <= h) return max * 0.06 * (t / (h || 1));
+  return max * 0.06 + easeInOutCubic((t - h) / (1 - h)) * (max * 0.94);
 }
 
 function isLandscapeImage(img: HTMLImageElement) {
   return img.naturalWidth > img.naturalHeight * 1.08;
 }
 
-/** Soft blurred/dimmed cover fill behind letterboxed landscape shots. */
+/** Soft dimmed cover fill behind letterboxed landscape shots (no blur — blur was killing render pace). */
 function drawBackdrop(
   ctx: CanvasRenderingContext2D,
   img: HTMLImageElement,
@@ -129,12 +136,12 @@ function drawBackdrop(
   ctx.beginPath();
   ctx.rect(dx, dy, dw, dh);
   ctx.clip();
+  ctx.globalAlpha = 0.28;
   ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = "high";
-  ctx.filter = "blur(24px) saturate(1.05)";
+  ctx.imageSmoothingQuality = "low";
   ctx.drawImage(img, bx, by, bw, bh);
-  ctx.filter = "none";
-  ctx.fillStyle = "rgba(5,15,40,0.55)";
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = "rgba(5,15,40,0.62)";
   ctx.fillRect(dx, dy, dw, dh);
   ctx.restore();
 }
@@ -229,7 +236,13 @@ function drawFramed(
     const target = cover * faceBoost;
     const eased = easeInOutCubic(f);
     scale = contain * (1 - eased) + target * eased;
-    drawBackdrop(ctx, img, dx, dy, dw, dh);
+    // Skip expensive backdrop on small collage pins
+    if (dw >= 420 && dh >= 420) {
+      drawBackdrop(ctx, img, dx, dy, dw, dh);
+    } else {
+      ctx.fillStyle = "#071638";
+      ctx.fillRect(dx, dy, dw, dh);
+    }
   } else {
     scale = cover * faceBoost;
   }
@@ -255,7 +268,7 @@ function drawFramed(
   ctx.rect(dx, dy, dw, dh);
   ctx.clip();
   ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = "high";
+  ctx.imageSmoothingQuality = "medium";
   ctx.drawImage(img, dx + x, dy + y, drawW, drawH);
   ctx.restore();
 }
@@ -267,18 +280,10 @@ function drawFlash(ctx: CanvasRenderingContext2D, width: number, height: number,
 }
 
 function drawVignette(ctx: CanvasRenderingContext2D, width: number, height: number) {
-  const g = ctx.createRadialGradient(
-    width / 2,
-    height * 0.42,
-    width * 0.14,
-    width / 2,
-    height * 0.48,
-    width * 0.95,
-  );
-  g.addColorStop(0, "rgba(0,0,0,0)");
-  g.addColorStop(1, "rgba(4,12,32,0.36)");
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, width, height);
+  // Leve e barato (sem radial grande todo frame)
+  ctx.fillStyle = "rgba(4,12,32,0.22)";
+  ctx.fillRect(0, 0, width, height * 0.12);
+  ctx.fillRect(0, height * 0.88, width, height * 0.12);
 }
 
 function drawLightSweep(
@@ -386,7 +391,7 @@ function drawTitleCard(
   ctx.fillRect(0, 0, width, height);
   drawLightSweep(ctx, width, height, (t * 0.8 + beatPulse * 0.15) % 1);
 
-  const pop = 0.86 + easeOutBack(Math.min(1, t * 1.25)) * 0.16 + beatPulse * 0.02;
+  const pop = 0.9 + easeOutCubic(Math.min(1, t * 2.2)) * 0.12 + beatPulse * 0.02;
   if (logo) {
     const size = Math.floor(width * 0.42 * pop);
     const x = (width - size) / 2;
@@ -414,94 +419,6 @@ function drawTitleCard(
     ctx.textAlign = "center";
     ctx.fillText(subtitle, width / 2, height * 0.8);
   }
-}
-
-function motionForShot(shot: PlannedShot, t: number) {
-  const landscape = isLandscapeImage(shot.clip.image);
-  let max = maxFraming(shot.subject, shot.clip.face);
-  if (landscape) max *= 0.72;
-  const panMul = landscape ? 0.4 : 0.65;
-  const { kind, subject, dirX, dirY } = shot;
-  const ease = easeInOutCubic(t);
-
-  if (subject === "group" || (landscape && subject !== "portrait")) {
-    const framing = softApproach(t, 0.2, Math.min(landscape ? 0.32 : 0.26, max));
-    const panAmt = (landscape ? 0.16 : 0.2) * panMul;
-    if (kind === "pullOut") {
-      return {
-        framing: max * (1 - ease) * 0.6,
-        zoom: 1,
-        panX: dirX * ease * panAmt,
-        panY: dirY * ease * panAmt * 0.4,
-      };
-    }
-    return {
-      framing,
-      zoom: 1,
-      panX: dirX * ease * panAmt,
-      panY: dirY * ease * (kind === "driftDiag" ? panAmt : panAmt * 0.25),
-    };
-  }
-
-  if (kind === "pushIn") {
-    const hold = landscape ? 0.32 : 0.25;
-    const framing = softApproach(t, hold, max);
-    return {
-      framing,
-      zoom: 1,
-      panX: dirX * framing * 0.06 * panMul,
-      panY: dirY * framing * 0.04 * panMul,
-    };
-  }
-
-  if (kind === "pullOut") {
-    const start = max * (landscape ? 0.65 : 0.8);
-    const framing = start * (1 - ease) + softApproach(t, 0.6, max * 0.2);
-    return {
-      framing: clamp(framing, 0, max),
-      zoom: 1,
-      panX: dirX * (1 - t) * 0.1 * panMul,
-      panY: dirY * (1 - t) * 0.06 * panMul,
-    };
-  }
-
-  if (kind === "driftH") {
-    const framing = softApproach(t, 0.22, max * 0.8);
-    return {
-      framing,
-      zoom: 1,
-      panX: dirX * (-0.28 + ease * 0.56) * panMul,
-      panY: dirY * 0.03 * Math.sin(t * Math.PI) * panMul,
-    };
-  }
-
-  if (kind === "driftDiag") {
-    const framing = softApproach(t, 0.22, max * 0.82);
-    return {
-      framing,
-      zoom: 1,
-      panX: dirX * ease * 0.28 * panMul,
-      panY: dirY * ease * 0.18 * panMul,
-    };
-  }
-
-  if (kind === "camera") {
-    const framing = softApproach(t, 0.28, max * 0.65);
-    return {
-      framing,
-      zoom: 1,
-      panX: dirX * ease * 0.12 * panMul,
-      panY: dirY * ease * 0.08 * panMul,
-    };
-  }
-
-  const framing = softApproach(t, landscape ? 0.3 : 0.24, max * 0.85);
-  return {
-    framing,
-    zoom: 1,
-    panX: dirX * ease * 0.2 * panMul,
-    panY: dirY * ease * 0.12 * panMul,
-  };
 }
 
 function drawVolleyCourt(
@@ -587,44 +504,151 @@ function drawVolleyCourt(
   ctx.fillText("MURAL ARRETADOS", width * 0.08, height * 0.09);
 }
 
-type PinLayout = { x: number; y: number; w: number; h: number; rot: number };
+type PinSlot = {
+  cx: number;
+  cy: number;
+  maxW: number;
+  maxH: number;
+  rot: number;
+};
 
-function collageLayouts(count: number): PinLayout[] {
-  const presets: PinLayout[][] = [
-    [{ x: 0.18, y: 0.28, w: 0.64, h: 0.42, rot: -2 }],
+function collageSlots(count: number, variant: number): PinSlot[] {
+  const presets: PinSlot[][][] = [
     [
-      { x: 0.08, y: 0.22, w: 0.42, h: 0.38, rot: -4 },
-      { x: 0.5, y: 0.34, w: 0.42, h: 0.38, rot: 3 },
+      [{ cx: 0.5, cy: 0.48, maxW: 0.88, maxH: 0.64, rot: -1.5 }],
+      [{ cx: 0.5, cy: 0.46, maxW: 0.8, maxH: 0.72, rot: 2 }],
     ],
     [
-      { x: 0.08, y: 0.2, w: 0.4, h: 0.34, rot: -3 },
-      { x: 0.52, y: 0.18, w: 0.4, h: 0.34, rot: 2.5 },
-      { x: 0.28, y: 0.48, w: 0.44, h: 0.32, rot: -1.5 },
+      [
+        { cx: 0.28, cy: 0.42, maxW: 0.52, maxH: 0.56, rot: -3.5 },
+        { cx: 0.72, cy: 0.56, maxW: 0.5, maxH: 0.5, rot: 2.8 },
+      ],
+      [
+        { cx: 0.5, cy: 0.28, maxW: 0.78, maxH: 0.38, rot: -2 },
+        { cx: 0.5, cy: 0.7, maxW: 0.78, maxH: 0.38, rot: 2 },
+      ],
+      [
+        { cx: 0.34, cy: 0.48, maxW: 0.62, maxH: 0.64, rot: -3 },
+        { cx: 0.74, cy: 0.5, maxW: 0.46, maxH: 0.46, rot: 3.5 },
+      ],
     ],
     [
-      { x: 0.06, y: 0.18, w: 0.42, h: 0.3, rot: -3.5 },
-      { x: 0.52, y: 0.16, w: 0.42, h: 0.3, rot: 2.8 },
-      { x: 0.1, y: 0.48, w: 0.38, h: 0.3, rot: 2 },
-      { x: 0.52, y: 0.5, w: 0.38, h: 0.3, rot: -2.2 },
+      [
+        { cx: 0.5, cy: 0.26, maxW: 0.78, maxH: 0.36, rot: -2 },
+        { cx: 0.28, cy: 0.68, maxW: 0.46, maxH: 0.38, rot: 2.2 },
+        { cx: 0.72, cy: 0.68, maxW: 0.46, maxH: 0.38, rot: -2.2 },
+      ],
+      [
+        { cx: 0.3, cy: 0.4, maxW: 0.52, maxH: 0.58, rot: -3 },
+        { cx: 0.74, cy: 0.28, maxW: 0.42, maxH: 0.34, rot: 2.5 },
+        { cx: 0.74, cy: 0.68, maxW: 0.42, maxH: 0.36, rot: -2 },
+      ],
+      [
+        { cx: 0.26, cy: 0.32, maxW: 0.44, maxH: 0.4, rot: -3 },
+        { cx: 0.7, cy: 0.36, maxW: 0.5, maxH: 0.42, rot: 2 },
+        { cx: 0.5, cy: 0.72, maxW: 0.7, maxH: 0.34, rot: -1.5 },
+      ],
     ],
     [
-      { x: 0.05, y: 0.16, w: 0.36, h: 0.28, rot: -4 },
-      { x: 0.42, y: 0.14, w: 0.28, h: 0.26, rot: 2 },
-      { x: 0.68, y: 0.2, w: 0.28, h: 0.3, rot: 3.5 },
-      { x: 0.1, y: 0.46, w: 0.4, h: 0.32, rot: -1.8 },
-      { x: 0.54, y: 0.5, w: 0.38, h: 0.3, rot: 2.4 },
-    ],
-    [
-      { x: 0.05, y: 0.15, w: 0.3, h: 0.26, rot: -3 },
-      { x: 0.36, y: 0.13, w: 0.3, h: 0.26, rot: 2.2 },
-      { x: 0.67, y: 0.17, w: 0.28, h: 0.28, rot: -2 },
-      { x: 0.08, y: 0.44, w: 0.32, h: 0.3, rot: 2.8 },
-      { x: 0.4, y: 0.46, w: 0.28, h: 0.28, rot: -1.5 },
-      { x: 0.68, y: 0.48, w: 0.28, h: 0.28, rot: 3 },
+      [
+        { cx: 0.27, cy: 0.3, maxW: 0.48, maxH: 0.38, rot: -3 },
+        { cx: 0.73, cy: 0.28, maxW: 0.44, maxH: 0.34, rot: 2.5 },
+        { cx: 0.3, cy: 0.7, maxW: 0.44, maxH: 0.34, rot: 2 },
+        { cx: 0.72, cy: 0.68, maxW: 0.48, maxH: 0.38, rot: -2.2 },
+      ],
+      [
+        { cx: 0.36, cy: 0.42, maxW: 0.64, maxH: 0.58, rot: -2 },
+        { cx: 0.82, cy: 0.22, maxW: 0.3, maxH: 0.24, rot: 3 },
+        { cx: 0.82, cy: 0.48, maxW: 0.3, maxH: 0.24, rot: -2 },
+        { cx: 0.82, cy: 0.74, maxW: 0.3, maxH: 0.24, rot: 2.2 },
+      ],
+      [
+        { cx: 0.3, cy: 0.26, maxW: 0.52, maxH: 0.34, rot: -3.5 },
+        { cx: 0.7, cy: 0.38, maxW: 0.5, maxH: 0.34, rot: 2.8 },
+        { cx: 0.28, cy: 0.62, maxW: 0.48, maxH: 0.34, rot: 2 },
+        { cx: 0.7, cy: 0.74, maxW: 0.5, maxH: 0.32, rot: -2 },
+      ],
     ],
   ];
-  const n = clamp(count, 1, 6);
-  return presets[n - 1];
+  const forCount = presets[clamp(count, 1, 4) - 1];
+  return forCount[variant % forCount.length];
+}
+
+function frameSizeForPhoto(
+  img: HTMLImageElement,
+  maxW: number,
+  maxH: number,
+): { w: number; h: number; landscape: boolean } {
+  const landscape = isLandscapeImage(img);
+  if (landscape) {
+    let w = maxW;
+    let h = w / 1.42;
+    if (h > maxH) {
+      h = maxH;
+      w = h * 1.42;
+    }
+    return { w, h, landscape: true };
+  }
+  let h = maxH;
+  let w = h * 0.72;
+  if (w > maxW) {
+    w = maxW;
+    h = w / 0.72;
+  }
+  return { w, h, landscape: false };
+}
+
+function pinMotion(
+  kind: PinMotion,
+  t: number,
+  dir: number,
+  landscape: boolean,
+  hasFace: boolean,
+) {
+  const e = easeInOutCubic(t);
+  const faceBoost = hasFace ? 1 : 0.75;
+  if (kind === "pushIn") {
+    const max = (landscape ? 0.26 : 0.44) * faceBoost;
+    return {
+      framing: softApproach(t, 0.04, max),
+      panX: dir * 0.06 * e,
+      panY: -0.05 * e * faceBoost,
+    };
+  }
+  if (kind === "pullOut") {
+    const start = (landscape ? 0.24 : 0.38) * faceBoost;
+    return {
+      framing: start * (1 - e) + 0.05,
+      panX: dir * 0.1 * (1 - e),
+      panY: 0.04 * (1 - e),
+    };
+  }
+  if (kind === "panH") {
+    return {
+      framing: 0.1 + e * 0.1 * faceBoost,
+      panX: dir * (-0.38 + e * 0.76),
+      panY: dir * 0.05 * Math.sin(t * Math.PI),
+    };
+  }
+  if (kind === "panV") {
+    return {
+      framing: 0.1 + e * 0.12 * faceBoost,
+      panX: dir * 0.05,
+      panY: dir * (-0.3 + e * 0.6),
+    };
+  }
+  if (kind === "drift") {
+    return {
+      framing: 0.08 + Math.sin(t * Math.PI) * 0.14 * faceBoost,
+      panX: dir * Math.sin(t * Math.PI * 2) * 0.14,
+      panY: Math.cos(t * Math.PI) * 0.09,
+    };
+  }
+  return {
+    framing: softApproach(t, 0.03, (landscape ? 0.2 : 0.34) * faceBoost),
+    panX: dir * (0.05 + e * 0.22),
+    panY: (dir > 0 ? -1 : 1) * (0.03 + e * 0.14),
+  };
 }
 
 function drawPinnedPhoto(
@@ -636,10 +660,15 @@ function drawPinnedPhoto(
   h: number,
   rotDeg: number,
   appear: number,
+  motionT: number,
+  motion: PinMotion,
+  dir: number,
+  landscape: boolean,
 ) {
   const a = clamp(appear, 0, 1);
-  if (a <= 0) return;
-  const pop = 0.86 + easeOutBack(a) * 0.14;
+  if (a <= 0.01) return;
+  const pop = 0.9 + easeOutCubic(a) * 0.12;
+  const m = pinMotion(motion, clamp(motionT, 0, 1), dir, landscape, Boolean(clip.face));
 
   ctx.save();
   ctx.globalAlpha = a;
@@ -648,66 +677,93 @@ function drawPinnedPhoto(
   ctx.scale(pop, pop);
   ctx.translate(-(x + w / 2), -(y + h / 2));
 
-  // polaroid plate
-  const pad = Math.min(w, h) * 0.045;
+  const pad = Math.min(w, h) * 0.04;
+  const bottomExtra = landscape ? pad * 1.2 : pad * 2.4;
   ctx.fillStyle = "#f7f4ee";
-  ctx.shadowColor = "rgba(0,0,0,0.4)";
-  ctx.shadowBlur = 18;
-  ctx.shadowOffsetY = 10;
-  ctx.fillRect(x - pad, y - pad, w + pad * 2, h + pad * 2.8);
-  ctx.shadowColor = "transparent";
+  ctx.fillRect(x - pad, y - pad, w + pad * 2, h + pad + bottomExtra);
 
-  // tape
-  ctx.fillStyle = "rgba(240,196,25,0.55)";
-  ctx.save();
-  ctx.translate(x + w * 0.18, y - pad * 0.2);
-  ctx.rotate(-0.15);
-  ctx.fillRect(-w * 0.12, -pad * 0.6, w * 0.24, pad * 1.1);
-  ctx.restore();
-  ctx.save();
-  ctx.translate(x + w * 0.82, y - pad * 0.1);
-  ctx.rotate(0.12);
-  ctx.fillRect(-w * 0.12, -pad * 0.6, w * 0.24, pad * 1.1);
-  ctx.restore();
+  ctx.fillStyle = "rgba(240,196,25,0.48)";
+  ctx.fillRect(x + w * 0.1, y - pad * 0.8, w * 0.26, pad);
+  ctx.fillRect(x + w * 0.64, y - pad * 0.7, w * 0.26, pad);
 
-  const face = clip.face;
-  const cx = face?.cx ?? 0.5;
-  const cy = face?.cy ?? 0.42;
-  drawFramed(ctx, clip.image, x, y, w, h, face, 0.15, 1, (cx - 0.5) * 0.2, (cy - 0.5) * 0.15);
-
+  ctx.imageSmoothingQuality = "medium";
+  drawFramed(ctx, clip.image, x, y, w, h, clip.face, m.framing, 1, m.panX, m.panY);
   ctx.restore();
+}
+
+function createCourtLayer(width: number, height: number) {
+  const layer = document.createElement("canvas");
+  layer.width = width;
+  layer.height = height;
+  const lctx = layer.getContext("2d");
+  if (lctx) drawVolleyCourt(lctx, width, height, 0.35);
+  return layer;
 }
 
 function drawCollageMural(
   ctx: CanvasRenderingContext2D,
-  clips: VideoClip[],
+  shot: PlannedShot,
   width: number,
   height: number,
   t: number,
+  courtLayer?: HTMLCanvasElement | null,
 ) {
-  drawVolleyCourt(ctx, width, height, t);
-  const group = clips.slice(0, 6);
-  const layout = collageLayouts(group.length);
-  // Entrada lenta: fotos entram ao longo de ~70% do shot, depois seguram
-  const enterT = clamp(t / 0.7, 0, 1);
-  const stagger = 0.11;
-  const appearDur = 0.32;
+  if (courtLayer) ctx.drawImage(courtLayer, 0, 0);
+  else drawVolleyCourt(ctx, width, height, t);
+
+  const group = shot.clips.slice(0, 4);
+  const slots = collageSlots(group.length, shot.layoutVariant);
+  // Entrada escalonada + saída individual (ritmo de Reels)
+  const enterWindow = 0.32;
+  const exitStart = 0.82;
+  const stagger = group.length <= 2 ? 0.08 : 0.055;
+  const appearDur = 0.18;
 
   for (let i = 0; i < group.length; i += 1) {
-    const pin = layout[i];
-    const appear = easeOutCubic(clamp((enterT - i * stagger) / appearDur, 0, 1));
-    const hold = clamp((t - 0.55) / 0.45, 0, 1);
-    const driftX = Math.sin((t * 0.7 + i * 0.37) * Math.PI) * width * 0.003;
-    const driftY = Math.cos((t * 0.7 + i * 0.29) * Math.PI) * height * 0.0025;
+    const slot = slots[i];
+    const clip = group[i];
+    const motion = shot.motions[i] ?? MOTION_CYCLE[i % MOTION_CYCLE.length];
+    const { w, h, landscape } = frameSizeForPhoto(
+      clip.image,
+      slot.maxW * width,
+      slot.maxH * height,
+    );
+    const x = slot.cx * width - w / 2;
+    const y = slot.cy * height - h / 2;
+
+    const enter = easeOutCubic(clamp((t / enterWindow - i * stagger) / appearDur, 0, 1));
+    // Saída em ordem inversa (última foto sai primeiro) — movimento contínuo
+    const exitOrder = group.length - 1 - i;
+    let appear = enter;
+    if (t > exitStart) {
+      const leave = easeInOutCubic(
+        clamp((t - exitStart) / (1 - exitStart) - exitOrder * 0.04, 0, 1),
+      );
+      appear *= 1 - leave;
+    }
+    if (appear <= 0.01) continue;
+
+    const dir = i % 2 === 0 ? 1 : -1;
+    const fromX = (i % 2 === 0 ? -1 : 1) * width * 0.16;
+    const fromY = (i < group.length / 2 ? -1 : 1) * height * 0.1;
+    const slideIn = 1 - enter;
+    const driftX = Math.sin((t * 1.2 + i * 0.45) * Math.PI) * width * 0.005;
+    const driftY = Math.cos((t * 1.15 + i * 0.37) * Math.PI) * height * 0.004;
+    const exitPush = t > exitStart ? (t - exitStart) / (1 - exitStart) : 0;
+
     drawPinnedPhoto(
       ctx,
-      group[i],
-      pin.x * width + driftX,
-      pin.y * height + driftY,
-      pin.w * width,
-      pin.h * height,
-      pin.rot + hold * (i % 2 === 0 ? -0.6 : 0.6),
+      clip,
+      x + fromX * slideIn + driftX + dir * exitPush * width * 0.06,
+      y + fromY * slideIn + driftY + (i < 2 ? -1 : 1) * exitPush * height * 0.05,
+      w,
+      h,
+      slot.rot + dir * t * 1.2 + exitPush * dir * 6,
       appear,
+      t,
+      motion,
+      dir,
+      landscape,
     );
   }
 }
@@ -718,104 +774,9 @@ function drawShotContent(
   t: number,
   width: number,
   height: number,
+  courtLayer?: HTMLCanvasElement | null,
 ) {
-  if (shot.kind === "collage") {
-    drawCollageMural(ctx, shot.clips ?? [shot.clip], width, height, t);
-    return;
-  }
-
-  const m = motionForShot(shot, t);
-  drawFramed(
-    ctx,
-    shot.clip.image,
-    0,
-    0,
-    width,
-    height,
-    shot.clip.face,
-    m.framing,
-    m.zoom,
-    m.panX,
-    m.panY,
-  );
-}
-
-function applyTransition(
-  ctx: CanvasRenderingContext2D,
-  width: number,
-  height: number,
-  kind: TransitionKind,
-  progress: number,
-  drawCurrent: () => void,
-  drawNext: () => void,
-) {
-  const p = clamp(progress, 0, 1);
-
-  if (kind === "fade") {
-    const e = easeInOut(p);
-    drawCurrent();
-    ctx.save();
-    ctx.globalAlpha = e;
-    drawNext();
-    ctx.restore();
-    return;
-  }
-
-  if (kind === "zoom") {
-    const e = easeInOutCubic(p);
-    ctx.save();
-    ctx.globalAlpha = 1 - e;
-    ctx.translate(width / 2, height / 2);
-    ctx.scale(1 + e * 0.18, 1 + e * 0.18);
-    ctx.translate(-width / 2, -height / 2);
-    drawCurrent();
-    ctx.restore();
-    ctx.save();
-    ctx.globalAlpha = e;
-    ctx.translate(width / 2, height / 2);
-    ctx.scale(0.9 + e * 0.1, 0.9 + e * 0.1);
-    ctx.translate(-width / 2, -height / 2);
-    drawNext();
-    ctx.restore();
-    return;
-  }
-
-  if (kind === "whip") {
-    const e = easeOutCubic(p);
-    const dir = p < 0.5 ? 1 : -1;
-    ctx.save();
-    ctx.translate(-width * e * 1.05, 0);
-    drawCurrent();
-    ctx.restore();
-    ctx.save();
-    ctx.translate(width * (1 - e), 0);
-    drawNext();
-    ctx.restore();
-    // soft streak at peak
-    if (e > 0.2 && e < 0.85) {
-      ctx.fillStyle = `rgba(247,244,238,${0.12 * Math.sin((e - 0.2) * Math.PI)})`;
-      for (let i = 0; i < 5; i += 1) {
-        ctx.fillRect(width * e + dir * i * 10, 0, 3, height);
-      }
-    }
-    return;
-  }
-
-  // motionBlur — short directional smear between shots
-  const e = easeInOutCubic(p);
-  const smear = Math.sin(e * Math.PI);
-  drawCurrent();
-  ctx.save();
-  ctx.globalAlpha = 0.35 * smear;
-  for (let i = 1; i <= 4; i += 1) {
-    ctx.setTransform(1, 0, 0, 1, i * 14 * smear, i * 4 * smear);
-    drawCurrent();
-  }
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.globalAlpha = e;
-  drawNext();
-  ctx.restore();
-  if (smear > 0.35) drawFlash(ctx, width, height, 0.1 * smear);
+  drawCollageMural(ctx, shot, width, height, t, courtLayer);
 }
 
 function uniqueClips(clips: VideoClip[]): VideoClip[] {
@@ -832,14 +793,87 @@ function uniqueClips(clips: VideoClip[]): VideoClip[] {
   return unique;
 }
 
-function planShots(clips: VideoClip[], bodyBeats: number): PlannedShot[] {
+function pickSoloIndex(clips: VideoClip[]): number {
+  let best = 0;
+  let bestScore = -1;
+  for (let i = 0; i < clips.length; i += 1) {
+    const face = clips[i].face;
+    const span = faceSpan(face);
+    const score = face ? span * 2 : 0.05;
+    if (score > bestScore) {
+      bestScore = score;
+      best = i;
+    }
+  }
+  return best;
+}
+
+/** Duração máxima do vídeo (hard cap). */
+export const MAX_VIDEO_SEC = 58;
+
+/**
+ * Calcula quantas fotos por slide a partir de N fotos e do tempo de corpo,
+ * pra caber em ≤58s com ~12–15 slides em álbuns ~40 fotos (não 4 estáticas sempre).
+ */
+export function planGroupSizes(photoCount: number, bodySec: number): number[] {
+  const n = Math.max(1, photoCount);
+  const minSlideSec = 2.15;
+  const maxSlideSec = 5.2;
+  const minSlides = Math.ceil(n / 4);
+  const maxSlides = Math.min(n, Math.max(minSlides, Math.floor(bodySec / minSlideSec)));
+
+  // Alvo: ~2.7–3.1 fotos/slide → 40 fotos ≈ 13–15 slides
+  let slides = Math.round(n / 2.9);
+  slides = clamp(slides, minSlides, maxSlides);
+
+  // Se o slide ficaria longo demais, abre mais — mas evita “1 foto por slide” em álbum pequeno
+  if (bodySec / slides > maxSlideSec && slides < maxSlides) {
+    const byTime = Math.ceil(bodySec / maxSlideSec);
+    const pairCap = Math.max(minSlides, Math.ceil(n / 2));
+    slides = Math.min(maxSlides, Math.max(slides, Math.min(byTime, pairCap)));
+  }
+
+  const sizes: number[] = [];
+  let left = n;
+  for (let i = 0; i < slides; i += 1) {
+    const slotsLeft = slides - i;
+    const maxTake = Math.min(4, left - (slotsLeft - 1));
+    const minTake = Math.max(1, left - (slotsLeft - 1) * 4);
+    const avgNeeded = left / slotsLeft;
+
+    let take = SIZE_CYCLE[i % SIZE_CYCLE.length];
+    if (avgNeeded >= 3.3) take = Math.max(take, 3);
+    else if (avgNeeded >= 2.6) take = Math.max(take, 2);
+    if (avgNeeded <= 1.6) take = Math.min(take, 2);
+    if (slides > Math.round(n / 2.5)) take = Math.max(take, Math.round(avgNeeded));
+
+    take = clamp(take, minTake, maxTake);
+    sizes.push(take);
+    left -= take;
+  }
+
+  if (left !== 0) {
+    for (let i = 0; left !== 0 && i < sizes.length * 4; i += 1) {
+      const idx = i % sizes.length;
+      if (left > 0 && sizes[idx] < 4) {
+        sizes[idx] += 1;
+        left -= 1;
+      } else if (left < 0 && sizes[idx] > 1) {
+        sizes[idx] -= 1;
+        left += 1;
+      }
+    }
+  }
+
+  return sizes.filter((s) => s > 0);
+}
+
+function planShots(clips: VideoClip[], bodySec: number): PlannedShot[] {
   const remaining = uniqueClips(clips);
   if (remaining.length === 0) return [];
 
+  const groupSizes = planGroupSizes(remaining.length, bodySec);
   const shots: PlannedShot[] = [];
-  let style = 0;
-  let lastKind: ShotKind | null = null;
-
   const dirs = [
     { x: 1, y: 0.35 },
     { x: -1, y: 0.25 },
@@ -849,90 +883,59 @@ function planShots(clips: VideoClip[], bodyBeats: number): PlannedShot[] {
     { x: -0.8, y: -0.35 },
   ];
 
-  while (remaining.length > 0) {
-    let kind = SHOT_CYCLE[style % SHOT_CYCLE.length];
-    style += 1;
-    if (kind === lastKind) {
-      kind = SHOT_CYCLE[style % SHOT_CYCLE.length];
-      style += 1;
+  for (let s = 0; s < groupSizes.length; s += 1) {
+    let want = Math.min(groupSizes[s], remaining.length);
+    if (want <= 0) break;
+
+    let group: VideoClip[];
+    if (want === 1) {
+      const idx = pickSoloIndex(remaining);
+      group = remaining.splice(idx, 1);
+    } else {
+      group = remaining.splice(0, want);
     }
 
-    const dir = dirs[shots.length % dirs.length];
-
-    // Collage only with unused photos; never wrap/repeat
-    if (kind === "collage" && remaining.length >= 2) {
-      const count = Math.min(6, remaining.length);
-      const group = remaining.splice(0, count);
-      lastKind = "collage";
-      shots.push({
-        kind: "collage",
-        clip: group[0],
-        clips: group,
-        subject: "scene",
-        beats: 14,
-        transition: "fade",
-        dirX: dir.x,
-        dirY: dir.y,
-      });
-      continue;
-    }
-
-    if (kind === "collage") kind = "kenBurns";
-
-    const clip = remaining.shift();
-    if (!clip) break;
-
-    const subject = classifySubject(clip.face);
-    if (subject === "group" && (kind === "pushIn" || kind === "pullOut")) {
-      kind = style % 2 === 0 ? "driftH" : "kenBurns";
-    }
-    lastKind = kind;
+    const dir = dirs[s % dirs.length];
+    const n = group.length;
+    // Peso ~ proporcional às fotos, com leve bônus pra solo (destaque)
+    const weight = n === 1 ? 1.25 : n === 2 ? 1.1 : n === 3 ? 1.05 : 1;
+    const motions = group.map((_, i) => {
+      if (n === 1 && group[0].face) return "pushIn" as PinMotion;
+      return MOTION_CYCLE[(s * 3 + i) % MOTION_CYCLE.length];
+    });
 
     shots.push({
-      kind,
-      clip,
-      subject,
-      beats: kind === "camera" ? 5 : 6,
-      transition: TRANSITIONS[shots.length % TRANSITIONS.length],
+      kind: "collage",
+      clip: group[0],
+      clips: group,
+      subject: classifySubject(group[0].face),
+      transition: TRANSITIONS[s % TRANSITIONS.length],
+      layoutVariant: s,
+      motions,
       dirX: dir.x,
       dirY: dir.y,
+      weight,
     });
   }
 
-  // Tempo proporcional à qtd de fotos em cada shot (sem jogar o resto tudo no último)
-  const photoWeights = shots.map((s) => s.clips?.length ?? 1);
-  const totalPhotos = photoWeights.reduce((a, b) => a + b, 0);
-  if (shots.length > 0 && totalPhotos > 0 && bodyBeats > 0) {
-    const ideal = bodyBeats / totalPhotos;
-    // ~2–3s/foto a 128bpm; evita clip único absurdo
-    const minBeats = 3;
-    const maxBeatsPerPhoto = 8;
-
-    let assigned = 0;
-    for (let i = 0; i < shots.length; i += 1) {
-      const n = photoWeights[i];
-      const raw = Math.round(ideal * n);
-      const capped = Math.min(n * maxBeatsPerPhoto, Math.max(minBeats, raw));
-      shots[i].beats = capped;
-      assigned += capped;
-    }
-
-    // Ajuste fino: espalha a diferença em +1/−1 beats
-    let diff = bodyBeats - assigned;
-    let i = 0;
-    while (diff !== 0 && shots.length > 0 && i < shots.length * 4) {
-      const idx = i % shots.length;
-      const n = photoWeights[idx];
-      if (diff > 0) {
-        if (shots[idx].beats < n * maxBeatsPerPhoto) {
-          shots[idx].beats += 1;
-          diff -= 1;
-        }
-      } else if (shots[idx].beats > minBeats) {
-        shots[idx].beats -= 1;
-        diff += 1;
-      }
-      i += 1;
+  // Fotos que sobraram (não deveria) — empurra no último slide até 4
+  while (remaining.length > 0 && shots.length > 0) {
+    const last = shots[shots.length - 1];
+    if (last.clips.length >= 4) {
+      const extra = remaining.splice(0, Math.min(4, remaining.length));
+      shots.push({
+        ...last,
+        clip: extra[0],
+        clips: extra,
+        layoutVariant: shots.length,
+        motions: extra.map((_, i) => MOTION_CYCLE[i % MOTION_CYCLE.length]),
+        transition: TRANSITIONS[shots.length % TRANSITIONS.length],
+        weight: extra.length,
+      });
+    } else {
+      last.clips.push(remaining.shift()!);
+      last.motions.push(MOTION_CYCLE[last.clips.length % MOTION_CYCLE.length]);
+      last.weight = last.clips.length === 1 ? 1.25 : last.clips.length;
     }
   }
 
@@ -979,9 +982,9 @@ export async function renderAnniversaryVideo({
   clips,
   title = "ARRETADOS",
   subtitle = "2 ANOS",
-  width = 1080,
-  height = 1920,
-  fps = 30,
+  width = 720,
+  height = 1280,
+  fps = 24,
   durationSec = 58,
   bpm = 128,
   musicUrl = "/music/party.mp3",
@@ -992,8 +995,18 @@ export async function renderAnniversaryVideo({
   const canvas = document.createElement("canvas");
   canvas.width = width;
   canvas.height = height;
-  const ctx = canvas.getContext("2d");
+  const ctx = canvas.getContext("2d", { alpha: false });
   if (!ctx) throw new Error("Canvas não disponível");
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "medium";
+
+  const courtLayer = createCourtLayer(width, height);
+  // Snapshot pra transição barata (evita desenhar 2 murais por frame)
+  const snap = document.createElement("canvas");
+  snap.width = width;
+  snap.height = height;
+  const snapCtx = snap.getContext("2d", { alpha: false });
+  if (!snapCtx) throw new Error("Canvas não disponível");
 
   const audioCtx = new AudioContext();
   await audioCtx.resume();
@@ -1005,7 +1018,26 @@ export async function renderAnniversaryVideo({
     throw new Error("Não deu pra carregar a música de fundo (/music/party.mp3).");
   }
 
-  const videoStream = canvas.captureStream(fps);
+  /**
+   * captureStream(0) + requestFrame: cada frame gravado dura ~1/fps,
+   * independente do custo do draw (sem acelerar slides leves / travar pesados).
+   */
+  type CaptureTrack = MediaStreamTrack & { requestFrame?: () => void };
+  let videoStream: MediaStream;
+  let requestFrame: (() => void) | null = null;
+  try {
+    const manual = canvas.captureStream(0);
+    const track = manual.getVideoTracks()[0] as CaptureTrack;
+    if (typeof track.requestFrame === "function") {
+      videoStream = manual;
+      requestFrame = () => track.requestFrame?.();
+    } else {
+      videoStream = canvas.captureStream(fps);
+    }
+  } catch {
+    videoStream = canvas.captureStream(fps);
+  }
+
   const mixed = new MediaStream([
     ...videoStream.getVideoTracks(),
     ...music.dest.stream.getAudioTracks(),
@@ -1024,7 +1056,7 @@ export async function renderAnniversaryVideo({
   const chunks: BlobPart[] = [];
   const recorder = new MediaRecorder(mixed, {
     mimeType,
-    videoBitsPerSecond: 8_000_000,
+    videoBitsPerSecond: 5_000_000,
     audioBitsPerSecond: 192_000,
   });
   const done = new Promise<Blob>((resolve, reject) => {
@@ -1048,102 +1080,168 @@ export async function renderAnniversaryVideo({
   }
 
   const beatSec = 60 / bpm;
-  const introSec = 2.0;
-  const outroSec = 2.0;
-  const bodySec = Math.max(4, durationSec - introSec - outroSec);
-  const bodyBeats = Math.max(8, Math.round(bodySec / beatSec));
+  const introSec = 0.55;
+  const outroSec = 0.55;
+  // Hard cap 58s: calcula corpo e distribui slides pela qtd de fotos
+  const cappedDuration = Math.min(durationSec, MAX_VIDEO_SEC);
+  const bodySec = Math.max(4, cappedDuration - introSec - outroSec);
 
-  const shots = planShots(clips, bodyBeats);
-  const shotSecs = shots.map((s) => s.beats * beatSec);
-  const plannedBody = shotSecs.reduce((a, b) => a + b, 0);
-  const scale = plannedBody > 0 ? bodySec / plannedBody : 1;
-  const shotFrameCounts = shotSecs.map((sec) => Math.max(1, Math.round(fps * sec * scale)));
+  const shots = planShots(clips, bodySec);
+  if (shots.length === 0) throw new Error("Nenhuma foto para animar");
 
-  const frameDuration = 1000 / fps;
-  const introFrames = Math.round(fps * introSec);
-  const outroFrames = Math.round(fps * outroSec);
-  let bodyFrames = shotFrameCounts.reduce((a, b) => a + b, 0);
+  const weightSum = shots.reduce((a, s) => a + s.weight, 0) || 1;
+  const slideFrameCounts = shots.map((s) =>
+    Math.max(12, Math.round(fps * bodySec * (s.weight / weightSum))),
+  );
+  // Garante soma exata de frames do corpo (= bodySec)
+  let plannedBodyFrames = slideFrameCounts.reduce((a, b) => a + b, 0);
   const bodyTarget = Math.round(fps * bodySec);
-  if (shotFrameCounts.length > 0 && bodyFrames !== bodyTarget) {
-    shotFrameCounts[shotFrameCounts.length - 1] += bodyTarget - bodyFrames;
-    bodyFrames = bodyTarget;
+  if (slideFrameCounts.length > 0 && plannedBodyFrames !== bodyTarget) {
+    slideFrameCounts[slideFrameCounts.length - 1] += bodyTarget - plannedBodyFrames;
+    plannedBodyFrames = bodyTarget;
   }
-  const totalFrames = introFrames + bodyFrames + outroFrames;
 
-  // Transitions ~1.75 beats — calmer, less abrupt
-  const transitionFramesTarget = Math.max(10, Math.round(fps * beatSec * 1.75));
+  const introFrames = Math.max(4, Math.round(fps * introSec));
+  const outroFrames = Math.max(4, Math.round(fps * outroSec));
+  const totalFrames = introFrames + plannedBodyFrames + outroFrames;
+  // Segurança: nunca passar de MAX_VIDEO_SEC em frames
+  const maxTotalFrames = Math.round(MAX_VIDEO_SEC * fps);
+  if (totalFrames > maxTotalFrames && plannedBodyFrames > 0) {
+    const scale = (maxTotalFrames - introFrames - outroFrames) / plannedBodyFrames;
+    for (let i = 0; i < slideFrameCounts.length; i += 1) {
+      slideFrameCounts[i] = Math.max(8, Math.round(slideFrameCounts[i] * scale));
+    }
+  }
+  const bodyFramesFinal = slideFrameCounts.reduce((a, b) => a + b, 0);
+  const totalFramesFinal = introFrames + bodyFramesFinal + outroFrames;
+  const frameDuration = 1000 / fps;
 
-  let frame = 0;
   const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-  const startedAt = performance.now();
+
+  const renderStarted = performance.now();
+  let frame = 0;
+  /** Agenda cada frame em t = frame/fps — duração do vídeo fica uniforme. */
+  const commitFrame = async () => {
+    frame += 1;
+    const target = renderStarted + frame * frameDuration;
+    const delay = target - performance.now();
+    if (delay > 1) await wait(delay);
+    else await new Promise<void>((r) => requestAnimationFrame(() => r()));
+    requestFrame?.();
+    onProgress?.(Math.min(0.99, frame / totalFramesFinal));
+  };
 
   recorder.start(100);
 
   for (let i = 0; i < introFrames; i += 1) {
-    const t = i / introFrames;
-    const elapsed = (performance.now() - startedAt) / 1000;
-    const beatPulse = Math.max(0, 1 - ((elapsed % beatSec) / beatSec) * 5);
+    const t = i / (introFrames - 1 || 1);
+    const beatPulse = Math.max(0, 1 - (((i / fps) % beatSec) / beatSec) * 5);
     drawTitleCard(ctx, width, height, title, subtitle, logo, t, beatPulse);
     if (t < 0.08) drawFlash(ctx, width, height, 0.22 * (1 - t / 0.08));
-    onProgress?.(frame / totalFrames);
-    frame += 1;
-    await wait(frameDuration);
+    await commitFrame();
   }
 
   for (let s = 0; s < shots.length; s += 1) {
     const shot = shots[s];
     const next = shots[s + 1];
-    const shotFrames = shotFrameCounts[s];
+    const slideFrames = slideFrameCounts[s];
+    // Transição ~0.55s, conectando movimento (não “slide de PowerPoint”)
     const transitionFrames = next
-      ? Math.min(
-          transitionFramesTarget * (shot.kind === "collage" || next.kind === "collage" ? 1.35 : 1),
-          Math.floor(shotFrames * (shot.kind === "collage" ? 0.28 : 0.42)),
-        )
+      ? Math.min(Math.round(fps * 0.55), Math.max(8, Math.floor(slideFrames * 0.2)))
       : 0;
-    const transitionStart = shotFrames - transitionFrames;
+    const bodyFramesShot = next ? slideFrames - transitionFrames : slideFrames;
 
-    for (let i = 0; i < shotFrames; i += 1) {
-      const t = i / (shotFrames - 1 || 1);
-
+    for (let i = 0; i < bodyFramesShot; i += 1) {
+      const t = i / (bodyFramesShot - 1 || 1);
       ctx.fillStyle = "#050f28";
       ctx.fillRect(0, 0, width, height);
-
-      if (next && i >= transitionStart) {
-        const tp = (i - transitionStart) / (transitionFrames || 1);
-        applyTransition(
-          ctx,
-          width,
-          height,
-          shot.transition,
-          tp,
-          () => drawShotContent(ctx, shot, t, width, height),
-          () => drawShotContent(ctx, next, 0.02, width, height),
-        );
-      } else {
-        drawShotContent(ctx, shot, t, width, height);
-      }
-
+      drawShotContent(ctx, shot, t, width, height, courtLayer);
       drawVignette(ctx, width, height);
       drawChrome(ctx, width, height, logo);
+      await commitFrame();
+    }
 
-      onProgress?.(frame / totalFrames);
-      frame += 1;
-      await wait(frameDuration);
+    if (next && transitionFrames > 0) {
+      snapCtx.drawImage(canvas, 0, 0);
+
+      for (let i = 0; i < transitionFrames; i += 1) {
+        const tp = i / (transitionFrames - 1 || 1);
+        const e = easeInOutCubic(tp);
+        ctx.fillStyle = "#050f28";
+        ctx.fillRect(0, 0, width, height);
+
+        if (shot.transition === "whip" || shot.transition === "whipV") {
+          const vertical = shot.transition === "whipV";
+          const travel = vertical ? height : width;
+          ctx.drawImage(snap, vertical ? 0 : -travel * e * 0.92, vertical ? -travel * e * 0.92 : 0);
+          ctx.save();
+          if (vertical) ctx.translate(0, travel * (1 - e));
+          else ctx.translate(travel * (1 - e), 0);
+          drawShotContent(ctx, next, clamp(0.05 + tp * 0.4, 0.02, 0.45), width, height, courtLayer);
+          drawVignette(ctx, width, height);
+          drawChrome(ctx, width, height, logo);
+          ctx.restore();
+        } else if (shot.transition === "zoom" || shot.transition === "softZoom") {
+          const outScale = shot.transition === "softZoom" ? 1 + e * 0.1 : 1 + e * 0.16;
+          const inScale = shot.transition === "softZoom" ? 0.94 + e * 0.06 : 0.88 + e * 0.12;
+          ctx.save();
+          ctx.globalAlpha = 1 - e;
+          ctx.translate(width / 2, height / 2);
+          ctx.scale(outScale, outScale);
+          ctx.translate(-width / 2, -height / 2);
+          ctx.drawImage(snap, 0, 0);
+          ctx.restore();
+          ctx.save();
+          ctx.globalAlpha = e;
+          ctx.translate(width / 2, height / 2);
+          ctx.scale(inScale, inScale);
+          ctx.translate(-width / 2, -height / 2);
+          drawShotContent(ctx, next, clamp(0.05 + tp * 0.4, 0.02, 0.45), width, height, courtLayer);
+          drawVignette(ctx, width, height);
+          drawChrome(ctx, width, height, logo);
+          ctx.restore();
+        } else if (shot.transition === "crossBlur") {
+          // “Blur” barato: smears do snapshot + fade do próximo
+          ctx.save();
+          ctx.globalAlpha = 1 - e;
+          ctx.drawImage(snap, 0, 0);
+          const smear = Math.sin(e * Math.PI);
+          ctx.globalAlpha = 0.22 * smear;
+          for (let k = 1; k <= 3; k += 1) {
+            ctx.drawImage(snap, k * 6 * smear, k * 3 * smear);
+            ctx.drawImage(snap, -k * 6 * smear, -k * 2 * smear);
+          }
+          ctx.restore();
+          ctx.save();
+          ctx.globalAlpha = e;
+          drawShotContent(ctx, next, clamp(0.05 + tp * 0.4, 0.02, 0.45), width, height, courtLayer);
+          drawVignette(ctx, width, height);
+          drawChrome(ctx, width, height, logo);
+          ctx.restore();
+        } else {
+          ctx.drawImage(snap, 0, 0);
+          ctx.save();
+          ctx.globalAlpha = easeInOut(tp);
+          drawShotContent(ctx, next, clamp(0.05 + tp * 0.4, 0.02, 0.45), width, height, courtLayer);
+          drawVignette(ctx, width, height);
+          drawChrome(ctx, width, height, logo);
+          ctx.restore();
+        }
+
+        await commitFrame();
+      }
     }
   }
 
   for (let i = 0; i < outroFrames; i += 1) {
-    const t = i / outroFrames;
-    const elapsed = (performance.now() - startedAt) / 1000;
-    const beatPulse = Math.max(0, 1 - ((elapsed % beatSec) / beatSec) * 5);
+    const t = i / (outroFrames - 1 || 1);
+    const beatPulse = Math.max(0, 1 - (((i / fps) % beatSec) / beatSec) * 5);
     drawTitleCard(ctx, width, height, "OBRIGADO", "", logo, t, beatPulse);
-    onProgress?.(frame / totalFrames);
-    frame += 1;
-    await wait(frameDuration);
+    await commitFrame();
   }
 
-  music.master.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.35);
-  await wait(100);
+  music.master.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.2);
+  await wait(40);
   recorder.stop();
   music.stop();
   videoStream.getTracks().forEach((track) => track.stop());
