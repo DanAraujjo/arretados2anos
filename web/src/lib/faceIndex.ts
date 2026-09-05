@@ -60,7 +60,8 @@ export async function loadFaceIndex(): Promise<{
           });
           if (!res.ok) continue;
           const data = (await res.json()) as FaceIndexFile;
-          if (!data?.photos || data.version !== FACE_CACHE_VERSION) continue;
+          if (!data?.photos || (data.version !== FACE_CACHE_VERSION && data.version !== 5))
+            continue;
           const index = parseIndex(data);
           cachedIndex = { key, index, source: url };
           return { index, source: url };

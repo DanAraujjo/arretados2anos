@@ -59,27 +59,31 @@ function averageDescriptors(list: Float32Array[]) {
   return out;
 }
 
-/** Selfie: SSD rápido (um detector) — scan total mira ≤10s online com faces.json. */
+/** Selfie: SSD (+ Tiny se falhar). Média quando os dois batem = descritor mais estável. */
 export async function getPrimaryDescriptor(
   input: HTMLImageElement | HTMLVideoElement | HTMLCanvasElement,
 ) {
   const fa = await api();
   await loadFaceModels();
 
-  const ssd = await fa
-    .detectSingleFace(input, new fa.SsdMobilenetv1Options({ minConfidence: 0.4 }))
-    .withFaceLandmarks()
-    .withFaceDescriptor();
-  if (ssd?.descriptor) return ssd.descriptor;
+  const [ssd, tiny] = await Promise.all([
+    fa
+      .detectSingleFace(input, new fa.SsdMobilenetv1Options({ minConfidence: 0.4 }))
+      .withFaceLandmarks()
+      .withFaceDescriptor(),
+    fa
+      .detectSingleFace(
+        input,
+        new fa.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.4 }),
+      )
+      .withFaceLandmarks()
+      .withFaceDescriptor(),
+  ]);
 
-  const tiny = await fa
-    .detectSingleFace(
-      input,
-      new fa.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.4 }),
-    )
-    .withFaceLandmarks()
-    .withFaceDescriptor();
-  return tiny?.descriptor ?? null;
+  const list = [ssd?.descriptor, tiny?.descriptor].filter(
+    (d): d is Float32Array => Boolean(d),
+  );
+  return averageDescriptors(list);
 }
 
 export type DetectedFace = {
@@ -260,22 +264,13 @@ export function bestDistanceToQuery(
 export function isMatch(
   distance: number,
   face?: DetectedFace["box"],
-  secondDistance?: number,
+  _secondDistance?: number,
 ) {
   const limit = face ? thresholdForFace(face) : MATCH_THRESHOLD;
-  if (!(distance < limit)) return false;
-
-  // Só descarta ambiguidade quando o "melhor" já está bem no limite.
-  if (
-    typeof secondDistance === "number" &&
-    Number.isFinite(secondDistance) &&
-    secondDistance - distance < 0.04 &&
-    distance > 0.4
-  ) {
-    return false;
-  }
-
-  return true;
+  // Álbum = "tem meu rosto?", não identificação 1:1.
+  // Margem de ambiguidade descartava matches bons em fotos de grupo
+  // (índice SSD com vários rostos parecidos).
+  return distance < limit;
 }
 
 export function distanceToScore(distance: number) {

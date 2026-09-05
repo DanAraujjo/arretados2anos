@@ -3,7 +3,7 @@ import type { DetectedFace } from "@/lib/face";
 import { MATCH_THRESHOLD } from "@/lib/face";
 
 /** Subir quando mudar detecção/threshold — invalida o cache antigo. */
-export const FACE_CACHE_VERSION = 5;
+export const FACE_CACHE_VERSION = 6;
 
 const DB_NAME = "arretados-face-cache";
 const DB_VERSION = 1;
