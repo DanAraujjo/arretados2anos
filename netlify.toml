@@ -1,0 +1,10 @@
+# App Next.js está em /web
+[build]
+  base = "web"
+  command = "npm run build"
+  # NÃO defina publish — o runtime Next da Netlify cuida disso
+
+[build.environment]
+  NODE_VERSION = "22"
+  # Desliga standalone (incompatível com o adapter Netlify)
+  NETLIFY = "true"
