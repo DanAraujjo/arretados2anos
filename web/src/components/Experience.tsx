@@ -622,6 +622,45 @@ export function Experience({ initialPhotos, photoHint }: Props) {
   }
 
   /**
+   * Ações da tela do vídeo. No celular vão **abaixo** do player, em duas linhas.
+   */
+  const videoActions = (
+    <>
+      {canShareVideo && (
+        <button
+          type="button"
+          className="btn-primary col-span-3 sm:w-auto"
+          disabled={sharing}
+          onClick={() => void shareVideo()}
+        >
+          {sharing ? "Abrindo..." : "Compartilhar"}
+        </button>
+      )}
+      <a
+        className={`text-center sm:w-auto ${canShareVideo ? "btn-ghost" : "btn-primary col-span-3"}`}
+        href={videoUrl ?? undefined}
+        download={`arretados-2-anos.${videoExt}`}
+      >
+        Baixar
+      </a>
+      <button
+        type="button"
+        className={`btn-ghost sm:w-auto ${canShareVideo ? "" : "col-span-2 sm:col-auto"}`}
+        onClick={() => setStep("results")}
+      >
+        Fotos
+      </button>
+      <button
+        type="button"
+        className={`btn-ghost sm:w-auto ${canShareVideo ? "" : "col-span-1 sm:col-auto"}`}
+        onClick={() => setStep("hero")}
+      >
+        Início
+      </button>
+    </>
+  );
+
+  /**
    * Ações da tela de resultados. No celular elas vão **abaixo** da grade, em
    * duas linhas — no topo elas empurravam as fotos pra fora da tela.
    */
@@ -973,40 +1012,8 @@ export function Experience({ initialPhotos, photoHint }: Props) {
               <h2 className="font-[family-name:var(--font-display)] text-3xl text-sand sm:text-4xl">
                 Seu vídeo
               </h2>
-              <div
-                className={`grid gap-2 sm:flex ${canShareVideo ? "grid-cols-2" : "grid-cols-3"}`}
-              >
-                {canShareVideo && (
-                  <button
-                    type="button"
-                    className="btn-primary col-span-2 sm:w-auto"
-                    disabled={sharing}
-                    onClick={() => void shareVideo()}
-                  >
-                    {sharing ? "Abrindo..." : "Compartilhar"}
-                  </button>
-                )}
-                <a
-                  className={`text-center sm:w-auto ${canShareVideo ? "btn-ghost" : "btn-primary"}`}
-                  href={videoUrl}
-                  download={`arretados-2-anos.${videoExt}`}
-                >
-                  Baixar
-                </a>
-                <button
-                  type="button"
-                  className="btn-ghost sm:w-auto"
-                  onClick={() => setStep("results")}
-                >
-                  Fotos
-                </button>
-                <button
-                  type="button"
-                  className="btn-ghost sm:w-auto"
-                  onClick={() => setStep("hero")}
-                >
-                  Início
-                </button>
+              <div className="hidden sm:flex sm:flex-wrap sm:justify-end sm:gap-2">
+                {videoActions}
               </div>
             </div>
             <video
@@ -1019,6 +1026,10 @@ export function Experience({ initialPhotos, photoHint }: Props) {
             {videoInfo && (
               <p className="shrink-0 text-center text-xs text-foam/40">{videoInfo}</p>
             )}
+
+            <div className="grid shrink-0 grid-cols-3 gap-2 pt-1 sm:hidden">
+              {videoActions}
+            </div>
           </section>
         )}
 

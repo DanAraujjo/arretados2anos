@@ -45,21 +45,26 @@ export type SinkOptions = {
 };
 
 /**
- * Trilha do vídeo, já recortada no trecho que entra (0:13 em diante, 64s).
+ * Trilhas do vídeo, em ordem de preferência.
  *
- * O formato do arquivo não muda o resultado — tudo vira PCM e sai em AAC. O que
- * pesa é a **duração**: decodificar a faixa inteira de 4min gastava ~98MB de
- * float no celular, contra ~24MB agora. Era parte da lentidão no Safari.
+ * `startSec` pertence a **cada arquivo**, não à faixa: `tema.m4a` já vem
+ * recortado no trecho que entra, então começa em 0; a faixa cheia precisa pular
+ * a introdução. Antes isso era deduzido pela duração, e o palpite errava —
+ * o recorte de 64s era tratado como faixa cheia e pulava 13s duas vezes.
  *
- * Pra regerar, veja `## Trilha` no README.
+ * O formato do arquivo não muda o resultado (tudo vira PCM e sai em AAC); o que
+ * pesa é a duração, por isso a preferida é a recortada. Veja `## Trilha` no
+ * README pra regerar.
  */
-export const DEFAULT_MUSIC_URL = "/music/tema.m4a";
-const MUSIC_FALLBACKS = [DEFAULT_MUSIC_URL, "/music.mp3", "/music/party.mp3"];
-/**
- * Onde a faixa começa a tocar. A trilha oficial já vem cortada, mas os
- * fallbacks são a faixa cheia, que precisa pular a introdução.
- */
-const MUSIC_START_SEC = 13;
+type MusicSource = { url: string; startSec: number };
+
+const MUSIC_SOURCES: MusicSource[] = [
+  { url: "/music/tema.m4a", startSec: 0 },
+  { url: "/music.mp3", startSec: 13 },
+  { url: "/music/party.mp3", startSec: 0 },
+];
+
+export const DEFAULT_MUSIC_URL = MUSIC_SOURCES[0].url;
 
 const AUDIO_SAMPLE_RATE = 48_000;
 const AUDIO_CHANNELS = 2;
@@ -162,17 +167,22 @@ async function pickAvcCodec(width: number, height: number, fps: number) {
  * navegador não decodifica (nem todo browser abre AAC). Sem isso, um decode
  * quebrado deixaria o vídeo mudo.
  */
-async function decodeMusic(ctx: BaseAudioContext, url: string): Promise<AudioBuffer> {
-  const candidates = url === DEFAULT_MUSIC_URL ? MUSIC_FALLBACKS : [url];
+async function decodeMusic(
+  ctx: BaseAudioContext,
+  url: string,
+): Promise<{ buffer: AudioBuffer; startSec: number }> {
+  const candidates =
+    url === DEFAULT_MUSIC_URL ? MUSIC_SOURCES : [{ url, startSec: 0 }];
   let last: unknown = null;
   for (const candidate of candidates) {
     try {
-      const res = await fetch(candidate);
+      const res = await fetch(candidate.url);
       if (!res.ok) {
-        last = new Error(`${candidate} (${res.status})`);
+        last = new Error(`${candidate.url} (${res.status})`);
         continue;
       }
-      return await ctx.decodeAudioData(await res.arrayBuffer());
+      const buffer = await ctx.decodeAudioData(await res.arrayBuffer());
+      return { buffer, startSec: Math.min(candidate.startSec, buffer.duration) };
     } catch (err) {
       last = err;
     }
@@ -199,7 +209,7 @@ async function renderMusicOffline(url: string, durationSec: number) {
   const trackSec = frames / AUDIO_SAMPLE_RATE;
 
   const offline = createOfflineContext(frames);
-  const buffer = await decodeMusic(offline, url);
+  const { buffer, startSec } = await decodeMusic(offline, url);
 
   const master = offline.createGain();
   const fadeIn = 0.35;
@@ -216,11 +226,7 @@ async function renderMusicOffline(url: string, durationSec: number) {
    * no fim do trecho e o corte fica audível — parece que a música acabou e
    * recomeçou. Cada repetição entra sobreposta, com crossfade na emenda.
    */
-  // Faixa já recortada não pula nada; a cheia entra depois da introdução.
-  const preTrimmed = buffer.duration < MUSIC_START_SEC * 3;
-  const offset = preTrimmed
-    ? 0
-    : Math.min(MUSIC_START_SEC, Math.max(0, buffer.duration - 1));
+  const offset = startSec;
   const clipSec = buffer.duration - offset;
   const crossfade = Math.min(LOOP_CROSSFADE_SEC, clipSec / 4);
   const stride = Math.max(0.5, clipSec - crossfade);
@@ -642,16 +648,13 @@ async function createMediaRecorderSink(opts: SinkOptions): Promise<FrameSink> {
 
   let musicSource: AudioBufferSourceNode;
   try {
+    const track = await decodeMusic(audioCtx, musicUrl);
     musicSource = audioCtx.createBufferSource();
-    musicSource.buffer = await decodeMusic(audioCtx, musicUrl);
-    const duration = musicSource.buffer.duration;
+    musicSource.buffer = track.buffer;
     musicSource.loop = true;
-    musicSource.loopStart =
-      duration < MUSIC_START_SEC * 3
-        ? 0
-        : Math.min(MUSIC_START_SEC, Math.max(0, duration - 1));
+    musicSource.loopStart = track.startSec;
     musicSource.connect(master);
-    musicSource.start(0, musicSource.loopStart);
+    musicSource.start(0, track.startSec);
   } catch (err) {
     throw err instanceof Error ? err : new Error("Falha na música de fundo");
   }
@@ -865,14 +868,34 @@ export function countAudioSamples(buffer: ArrayBuffer): number | null {
   }
 }
 
-/** `?audio=realtime` pula o WebCodecs — escape sem precisar de novo deploy. */
-function realtimeRequested() {
-  if (typeof location === "undefined") return false;
-  return new URLSearchParams(location.search).get("audio") === "realtime";
+/** `?audio=realtime` ou `?audio=webcodecs` força um dos caminhos. */
+function audioOverride() {
+  if (typeof location === "undefined") return null;
+  const value = new URLSearchParams(location.search).get("audio");
+  return value === "realtime" || value === "webcodecs" ? value : null;
+}
+
+/**
+ * No WebKit da Apple (Safari e, no iPhone, todos os navegadores) o áudio do
+ * caminho WebCodecs sai mudo: o arquivo fica com amostras que o próprio
+ * navegador não decodifica. Pelo MediaRecorder o som sai certo, então lá o
+ * padrão é a gravação nativa.
+ *
+ * O custo é gravar em tempo real (~58s em vez de ~10s). Pra reavaliar quando o
+ * WebKit corrigir, abra com `?audio=webcodecs` e confira o pico no diagnóstico.
+ */
+function prefersRealtimeAudio() {
+  if (typeof navigator === "undefined") return false;
+  return navigator.vendor === "Apple Computer, Inc.";
 }
 
 export async function createFrameSink(opts: SinkOptions): Promise<FrameSink> {
-  if (!opts.forceRealtime && !realtimeRequested()) {
+  const override = audioOverride();
+  const useWebCodecs =
+    override === "webcodecs" ||
+    (override !== "realtime" && !opts.forceRealtime && !prefersRealtimeAudio());
+
+  if (useWebCodecs) {
     try {
       const webcodecs = await createWebCodecsSink(opts);
       if (webcodecs) return webcodecs;

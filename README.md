@@ -149,8 +149,18 @@ encoder (`fonte`) e o que aconteceu com a faixa. Se `fonte` estiver saudável e 
 arquivo mudo, o problema é do encoder/mux; se `fonte 0.00`, quem falhou foi o
 `OfflineAudioContext`.
 
-`?audio=realtime` na URL pula o WebCodecs e grava pelo MediaRecorder — escape
-sem precisar de deploy quando o caminho offline sai mudo num aparelho.
+### WebKit grava em tempo real
+
+No WebKit da Apple (Safari e, no iPhone, **todos** os navegadores) o arquivo do
+caminho WebCodecs sai mudo: tem amostras de áudio que o próprio navegador não
+decodifica. Pelo MediaRecorder o som sai certo — confirmado no aparelho, que
+mediu pico 0.50 nesse caminho e não conseguiu medir nada no outro. Por isso lá o
+padrão é a gravação nativa.
+
+O custo é gravar em tempo real (~58s em vez de ~10s), e a duração continua
+dentro do teto: medido em 57.970s de vídeo. Pra reavaliar quando o WebKit
+corrigir, abra com `?audio=webcodecs` e confira o pico no diagnóstico.
+`?audio=realtime` força o contrário.
 
 ## Colocar as fotos
 
