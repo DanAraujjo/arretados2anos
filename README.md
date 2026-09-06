@@ -144,10 +144,10 @@ ou faixa vazia no muxer passam batido, e só quem assiste percebe. Por isso:
   no primeiro bloco (sem `esds` nenhum player decodifica, e a faixa sai muda), e
   quadros em ADTS têm o cabeçalho removido — no MP4 vai o AAC cru.
 
-A tela do vídeo mostra qual caminho foi usado, o pico do PCM que entrou no
-encoder (`fonte`) e o que aconteceu com a faixa. Se `fonte` estiver saudável e o
-arquivo mudo, o problema é do encoder/mux; se `fonte 0.00`, quem falhou foi o
-`OfflineAudioContext`.
+Ao terminar o vídeo, o console recebe qual caminho foi usado, o pico do PCM que
+entrou no encoder (`fonte`) e o que aconteceu com a faixa. Se `fonte` estiver
+saudável e o arquivo mudo, o problema é do encoder/mux; se `fonte 0.00`, quem
+falhou foi o `OfflineAudioContext`.
 
 ### WebKit grava em tempo real
 

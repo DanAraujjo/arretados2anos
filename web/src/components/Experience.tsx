@@ -75,7 +75,6 @@ export function Experience({ initialPhotos, photoHint }: Props) {
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [videoExt, setVideoExt] = useState("mp4");
   const [canShareVideo, setCanShareVideo] = useState(false);
-  const [videoInfo, setVideoInfo] = useState("");
   const [realtimeAudio, setRealtimeAudio] = useState(false);
   const [sharing, setSharing] = useState(false);
   const videoFileRef = useRef<File | null>(null);
@@ -615,7 +614,9 @@ export function Experience({ initialPhotos, photoHint }: Props) {
         );
         setVideoUrl(URL.createObjectURL(blob));
         setVideoExt(extension);
-        setVideoInfo(diagnostics);
+        // Fora da tela, mas continua no console: é o que identifica vídeo mudo
+        // ou encoder estranho num aparelho específico.
+        console.info(`[arretados] vídeo: ${diagnostics}`);
         setStep("video");
       } finally {
         releaseClips(clips);
@@ -1039,10 +1040,6 @@ export function Experience({ initialPhotos, photoHint }: Props) {
               playsInline
               className="min-h-0 w-full flex-1 rounded-2xl border border-sand/20 bg-ink object-contain"
             />
-            {videoInfo && (
-              <p className="shrink-0 text-center text-xs text-foam/40">{videoInfo}</p>
-            )}
-
             <div className="grid shrink-0 grid-cols-3 gap-2 pt-1 sm:hidden">
               {videoActions}
             </div>
