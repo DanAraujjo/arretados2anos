@@ -1,4 +1,10 @@
-import { DEFAULT_MUSIC_URL, createFrameSink, yieldToUi } from "@/lib/encode";
+import {
+  DEFAULT_MUSIC_URL,
+  countAudioSamples,
+  createFrameSink,
+  yieldToUi,
+} from "@/lib/encode";
+import type { FrameSink, RenderOutput } from "@/lib/encode";
 import { mapPool } from "@/lib/pool";
 import type { FaceBox } from "@/lib/types";
 
@@ -1145,7 +1151,7 @@ export async function renderAnniversaryVideo({
   durationSec = MAX_VIDEO_SEC,
   musicUrl = DEFAULT_MUSIC_URL,
   onProgress,
-}: RenderVideoOptions): Promise<{ blob: Blob; extension: string }> {
+}: RenderVideoOptions): Promise<RenderOutput> {
   if (clips.length === 0) throw new Error("Nenhuma foto para animar");
 
   const canvas = document.createElement("canvas");
@@ -1198,14 +1204,8 @@ export async function renderAnniversaryVideo({
     Math.min(minSlideFrames, Math.floor(pacedBodyFrames / shots.length)),
   );
 
-  const sink = await createFrameSink({
-    canvas,
-    width,
-    height,
-    fps,
-    totalFrames: introFrames + slideFrameCounts.reduce((a, b) => a + b, 0) + outroFrames,
-    musicUrl,
-  });
+  const sinkFrames =
+    introFrames + slideFrameCounts.reduce((a, b) => a + b, 0) + outroFrames;
 
   const totalFramesFinal =
     introFrames + slideFrameCounts.reduce((a, b) => a + b, 0) + outroFrames;
@@ -1216,7 +1216,8 @@ export async function renderAnniversaryVideo({
   );
 
   let frame = 0;
-  const commitFrame = async () => {
+  /** Recebe o sink por parâmetro: a tentativa pode ser refeita com outro. */
+  const makeCommit = (sink: FrameSink) => async () => {
     // Apaga no fim junto com a música, em vez de cortar seco no último frame.
     const remaining = totalFramesFinal - frame;
     if (remaining <= fadeOutFrames) {
@@ -1232,6 +1233,8 @@ export async function renderAnniversaryVideo({
     onProgress?.(Math.min(0.97, (frame / totalFramesFinal) * 0.97));
   };
 
+  const renderWith = async (sink: FrameSink) => {
+  const commitFrame = makeCommit(sink);
   try {
     for (let i = 0; i < introFrames; i += 1) {
       const t = i / (introFrames - 1 || 1);
@@ -1336,7 +1339,61 @@ export async function renderAnniversaryVideo({
 
   onProgress?.(0.98);
   await yieldToUi();
-  const blob = await sink.finish();
+  return sink.finish();
+  };
+
+  const attempt = async (forceRealtime: boolean) => {
+    frame = 0;
+    const sink = await createFrameSink({
+      canvas,
+      width,
+      height,
+      fps,
+      totalFrames: sinkFrames,
+      musicUrl,
+      forceRealtime,
+    });
+    const blob = await renderWith(sink);
+    return { blob, sink };
+  };
+
+  let { blob, sink } = await attempt(false);
+  let audioSamples = await countAudioInBlob(blob);
+
+  /**
+   * Arquivo mudo não levanta erro em lugar nenhum: encoder que falha por
+   * callback ou faixa vazia no muxer passam batido, e só quem assiste percebe.
+   * Confirmado o silêncio, refaz pela via nativa do navegador.
+   */
+  if (sink.extension === "mp4" && sink.offline && audioSamples === 0) {
+    onProgress?.(0.3);
+    ({ blob, sink } = await attempt(true));
+    audioSamples = await countAudioInBlob(blob);
+  }
+
   onProgress?.(1);
-  return { blob, extension: sink.extension };
+  const audioNote =
+    audioSamples === null
+      ? "áudio não verificado"
+      : audioSamples > 0
+        ? "áudio ok"
+        : "sem áudio";
+  return {
+    blob,
+    extension: sink.extension,
+    diagnostics: `${sink.label} · ${audioNote}`,
+  };
+}
+
+/** O `moov` vem no início (fastStart), então o começo do arquivo basta. */
+async function countAudioInBlob(blob: Blob) {
+  if (!blob.type.includes("mp4")) return null;
+  try {
+    const head = await blob.slice(0, 4_000_000).arrayBuffer();
+    const fromHead = countAudioSamples(head);
+    if (fromHead !== null) return fromHead;
+    return countAudioSamples(await blob.arrayBuffer());
+  } catch {
+    return null;
+  }
 }

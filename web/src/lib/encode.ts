@@ -20,6 +20,15 @@ export type FrameSink = {
   extension: string;
   /** false = tempo real (MediaRecorder); true = encode offline. */
   offline: boolean;
+  /** Curto e legível — vai pro diagnóstico na tela do vídeo. */
+  label: string;
+};
+
+export type RenderOutput = {
+  blob: Blob;
+  extension: string;
+  /** Como o arquivo foi gerado e se tem faixa de áudio com amostras. */
+  diagnostics: string;
 };
 
 export type SinkOptions = {
@@ -29,6 +38,8 @@ export type SinkOptions = {
   fps: number;
   totalFrames: number;
   musicUrl: string;
+  /** Pula o WebCodecs — usado quando o arquivo offline saiu mudo. */
+  forceRealtime?: boolean;
 };
 
 /** Trilha do vídeo; as demais são fallback se a primeira faltar ou não decodificar. */
@@ -174,11 +185,7 @@ async function renderMusicOffline(url: string, durationSec: number) {
   );
   const trackSec = frames / AUDIO_SAMPLE_RATE;
 
-  const offline = new OfflineAudioContext(
-    AUDIO_CHANNELS,
-    frames,
-    AUDIO_SAMPLE_RATE,
-  );
+  const offline = createOfflineContext(frames);
   const buffer = await decodeMusic(offline, url);
 
   const master = offline.createGain();
@@ -246,6 +253,62 @@ function equalPowerCurves(points = 128): [Float32Array, Float32Array] {
   return [fadeIn, fadeOut];
 }
 
+/**
+ * Safari antigo no iOS recusa OfflineAudioContext fora da taxa do hardware, e
+ * o erro só aparece na hora de renderizar. Tenta 48k e cai pra 44.1k.
+ */
+function createOfflineContext(framesAt48k: number) {
+  try {
+    return new OfflineAudioContext(AUDIO_CHANNELS, framesAt48k, AUDIO_SAMPLE_RATE);
+  } catch {
+    const rate = 44_100;
+    const frames = Math.round((framesAt48k / AUDIO_SAMPLE_RATE) * rate);
+    return new OfflineAudioContext(AUDIO_CHANNELS, frames, rate);
+  }
+}
+
+/**
+ * `isConfigSupported` mente em alguns navegadores: diz que suporta AAC e depois
+ * não emite bloco nenhum, gerando vídeo mudo sem erro. Aqui o encoder é testado
+ * de verdade com alguns quadros de silêncio antes de escolher o caminho.
+ */
+async function canEncodeAac(sampleRate: number, numberOfChannels: number) {
+  if (typeof AudioEncoder === "undefined" || typeof AudioData === "undefined") {
+    return false;
+  }
+  try {
+    let chunks = 0;
+    const encoder = new AudioEncoder({
+      output: () => {
+        chunks += 1;
+      },
+      error: () => {},
+    });
+    encoder.configure({
+      codec: "mp4a.40.2",
+      sampleRate,
+      numberOfChannels,
+      bitrate: AUDIO_BITRATE,
+    });
+    const frames = AUDIO_CHUNK_FRAMES * 4;
+    encoder.encode(
+      new AudioData({
+        format: "f32-planar",
+        sampleRate,
+        numberOfFrames: frames,
+        numberOfChannels,
+        timestamp: 0,
+        data: new Float32Array(numberOfChannels * frames),
+      }),
+    );
+    await encoder.flush();
+    encoder.close();
+    return chunks > 0;
+  } catch {
+    return false;
+  }
+}
+
 /** Fatia planar (canal 0 inteiro, depois canal 1) — formato do AudioData. */
 function planarSlice(buffer: AudioBuffer, start: number, count: number) {
   const channels = buffer.numberOfChannels;
@@ -311,15 +374,11 @@ async function createWebCodecsSink(opts: SinkOptions): Promise<FrameSink | null>
   if (!codec) return null;
 
   const durationSec = totalFrames / fps;
-  const audioSupport = await AudioEncoder.isConfigSupported({
-    codec: "mp4a.40.2",
-    sampleRate: AUDIO_SAMPLE_RATE,
-    numberOfChannels: AUDIO_CHANNELS,
-    bitrate: AUDIO_BITRATE,
-  }).catch(() => null);
-  if (!audioSupport?.supported) return null;
-
   const music = await renderMusicOffline(musicUrl, durationSec);
+
+  // Sem AAC de verdade o vídeo sairia mudo em silêncio; melhor cair no
+  // MediaRecorder, que grava o áudio pela via nativa do navegador.
+  if (!(await canEncodeAac(music.sampleRate, music.numberOfChannels))) return null;
 
   const target = new ArrayBufferTarget();
   const muxer = new Muxer({
@@ -357,6 +416,7 @@ async function createWebCodecsSink(opts: SinkOptions): Promise<FrameSink | null>
   return {
     extension: "mp4",
     offline: true,
+    label: `WebCodecs ${codec}`,
     async addFrame(index: number) {
       if (encoderError) throw encoderError;
       const frame = new VideoFrame(canvas, {
@@ -490,6 +550,7 @@ async function createMediaRecorderSink(opts: SinkOptions): Promise<FrameSink> {
   return {
     extension: containerType === "video/mp4" ? "mp4" : "webm",
     offline: false,
+    label: `MediaRecorder ${mimeType.replace("video/", "")}`,
     async addFrame(index: number) {
       const target = started + (index + 1) * frameDurationMs;
       const delay = target - performance.now();
@@ -518,12 +579,116 @@ async function createMediaRecorderSink(opts: SinkOptions): Promise<FrameSink> {
   };
 }
 
-export async function createFrameSink(opts: SinkOptions): Promise<FrameSink> {
+/**
+ * Conta amostras de áudio no MP4 gerado.
+ *
+ * É a única forma de saber que o arquivo tem som: encoder que falha por
+ * callback ou muxer que fecha uma faixa vazia não levantam erro nenhum, e o
+ * sintoma só aparece no celular de quem assiste.
+ *
+ * Cobre os dois formatos que o app produz: o MP4 comum do mp4-muxer (amostras
+ * no `stts`) e o **fragmentado** do MediaRecorder (`moof`/`trun`, com o `moov`
+ * servindo só de cabeçalho).
+ */
+export function countAudioSamples(buffer: ArrayBuffer): number | null {
+  const view = new DataView(buffer);
+
+  const fourcc = (at: number) =>
+    String.fromCharCode(
+      view.getUint8(at),
+      view.getUint8(at + 1),
+      view.getUint8(at + 2),
+      view.getUint8(at + 3),
+    );
+
+  let audioTrackId: number | null = null;
+  let sttsSamples: number | null = null;
+  let trunSamples = 0;
+  let sawMoof = false;
+
+  const walk = (start: number, end: number, state: { trackId: number | null; isAudio: boolean }) => {
+    let offset = start;
+    while (offset + 8 <= end) {
+      let size = view.getUint32(offset);
+      const type = fourcc(offset + 4);
+      let header = 8;
+      if (size === 1) {
+        size = Number(view.getBigUint64(offset + 8));
+        header = 16;
+      }
+      if (size === 0) size = end - offset;
+      if (size < header || offset + size > end) return;
+      const body = offset + header;
+
+      switch (type) {
+        case "moof":
+          sawMoof = true;
+          break;
+        case "tkhd": {
+          const version = view.getUint8(body);
+          state.trackId = view.getUint32(body + (version === 1 ? 20 : 12));
+          break;
+        }
+        case "hdlr":
+          state.isAudio = fourcc(body + 8) === "soun";
+          break;
+        case "stts": {
+          if (!state.isAudio) break;
+          const entries = view.getUint32(body + 4);
+          let total = 0;
+          for (let i = 0; i < entries; i += 1) total += view.getUint32(body + 8 + i * 8);
+          sttsSamples = (sttsSamples ?? 0) + total;
+          break;
+        }
+        case "tfhd":
+          state.trackId = view.getUint32(body + 4);
+          break;
+        case "trun": {
+          if (audioTrackId === null || state.trackId !== audioTrackId) break;
+          trunSamples += view.getUint32(body + 4);
+          break;
+        }
+      }
+
+      if (
+        ["moov", "trak", "mdia", "minf", "stbl", "moof", "traf"].includes(type)
+      ) {
+        // Cada trak/traf começa com o próprio contexto de faixa.
+        const child = ["trak", "traf"].includes(type)
+          ? { trackId: null as number | null, isAudio: false }
+          : state;
+        walk(body, offset + size, child);
+        if (type === "trak" && child.isAudio && child.trackId !== null) {
+          audioTrackId = child.trackId;
+        }
+      }
+      offset += size;
+    }
+  };
+
   try {
-    const webcodecs = await createWebCodecsSink(opts);
-    if (webcodecs) return webcodecs;
+    // Primeira passada acha a faixa de áudio; a segunda soma os fragmentos.
+    walk(0, buffer.byteLength, { trackId: null, isAudio: false });
+    if (sawMoof) {
+      trunSamples = 0;
+      walk(0, buffer.byteLength, { trackId: null, isAudio: false });
+      if (audioTrackId === null) return 0;
+      return trunSamples;
+    }
+    return sttsSamples;
   } catch {
-    // cai pro MediaRecorder
+    return null;
+  }
+}
+
+export async function createFrameSink(opts: SinkOptions): Promise<FrameSink> {
+  if (!opts.forceRealtime) {
+    try {
+      const webcodecs = await createWebCodecsSink(opts);
+      if (webcodecs) return webcodecs;
+    } catch {
+      // cai pro MediaRecorder
+    }
   }
   return createMediaRecorderSink(opts);
 }

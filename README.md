@@ -111,10 +111,25 @@ Usa o `afconvert` (nativo do macOS, sem ffmpeg) e grava em
 `public/music/tema.m4a`, que junto com `party.mp3` é fallback caso a faixa
 principal falte ou o navegador não decodifique.
 
-No iOS o áudio só sai se o `AudioContext` for destravado **dentro** do gesto do
-usuário. Como a montagem faz downloads antes de chegar no som, `unlockAudio()`
-roda na primeira linha do clique, antes de qualquer `await` — sem isso o vídeo
-sai mudo no iPhone.
+### Vídeo mudo
+
+Vídeo sem som não levanta erro em lugar nenhum — encoder que falha por callback
+ou faixa vazia no muxer passam batido, e só quem assiste percebe. Por isso:
+
+- `unlockAudio()` roda na primeira linha do clique, antes de qualquer `await`:
+  no iOS o `AudioContext` só libera dentro do gesto do usuário, e a montagem faz
+  downloads antes de chegar no som.
+- `canEncodeAac()` testa o encoder de verdade com alguns quadros de silêncio.
+  `isConfigSupported` mente em alguns navegadores: diz que suporta e não emite
+  bloco nenhum.
+- `OfflineAudioContext` tenta 48kHz e cai pra 44.1kHz — Safari antigo recusa
+  taxa diferente da do hardware.
+- `countAudioSamples()` confere o arquivo pronto. Se o caminho offline saiu
+  mudo, o vídeo é refeito pelo MediaRecorder. Lida com MP4 comum (`stts`) e com
+  o fragmentado do MediaRecorder (`moof`/`trun`) — ler só o `stts` num
+  fragmentado dá zero e reporta silêncio que não existe.
+
+A tela do vídeo mostra qual caminho foi usado e se o áudio foi verificado.
 
 ## Colocar as fotos
 

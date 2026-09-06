@@ -75,6 +75,7 @@ export function Experience({ initialPhotos, photoHint }: Props) {
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [videoExt, setVideoExt] = useState("mp4");
   const [canShareVideo, setCanShareVideo] = useState(false);
+  const [videoInfo, setVideoInfo] = useState("");
   const [sharing, setSharing] = useState(false);
   const videoFileRef = useRef<File | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -578,7 +579,7 @@ export function Experience({ initialPhotos, photoHint }: Props) {
 
       setRenderLabel("Montando retrospectiva...");
       try {
-        const { blob, extension } = await renderAnniversaryVideo({
+        const { blob, extension, diagnostics } = await renderAnniversaryVideo({
           clips,
           durationSec: MAX_VIDEO_SEC,
           onProgress: (ratio) => setRenderProgress(0.2 + ratio * 0.8),
@@ -598,6 +599,7 @@ export function Experience({ initialPhotos, photoHint }: Props) {
         );
         setVideoUrl(URL.createObjectURL(blob));
         setVideoExt(extension);
+        setVideoInfo(diagnostics);
         setStep("video");
       } finally {
         releaseClips(clips);
@@ -996,6 +998,9 @@ export function Experience({ initialPhotos, photoHint }: Props) {
               playsInline
               className="min-h-0 w-full flex-1 rounded-2xl border border-sand/20 bg-ink object-contain"
             />
+            {videoInfo && (
+              <p className="shrink-0 text-center text-xs text-foam/40">{videoInfo}</p>
+            )}
           </section>
         )}
 
