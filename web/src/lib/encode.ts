@@ -42,10 +42,21 @@ export type SinkOptions = {
   forceRealtime?: boolean;
 };
 
-/** Trilha do vídeo; as demais são fallback se a primeira faltar ou não decodificar. */
-export const DEFAULT_MUSIC_URL = "/music.mp3";
-const MUSIC_FALLBACKS = [DEFAULT_MUSIC_URL, "/music/tema.m4a", "/music/party.mp3"];
-/** A introdução da faixa não serve de trilha — o vídeo entra no refrão. */
+/**
+ * Trilha do vídeo, já recortada no trecho que entra (0:13 em diante, 64s).
+ *
+ * O formato do arquivo não muda o resultado — tudo vira PCM e sai em AAC. O que
+ * pesa é a **duração**: decodificar a faixa inteira de 4min gastava ~98MB de
+ * float no celular, contra ~24MB agora. Era parte da lentidão no Safari.
+ *
+ * Pra regerar, veja `## Trilha` no README.
+ */
+export const DEFAULT_MUSIC_URL = "/music/tema.m4a";
+const MUSIC_FALLBACKS = [DEFAULT_MUSIC_URL, "/music.mp3", "/music/party.mp3"];
+/**
+ * Onde a faixa começa a tocar. A trilha oficial já vem cortada, mas os
+ * fallbacks são a faixa cheia, que precisa pular a introdução.
+ */
 const MUSIC_START_SEC = 13;
 
 const AUDIO_SAMPLE_RATE = 48_000;
@@ -203,8 +214,11 @@ async function renderMusicOffline(url: string, durationSec: number) {
    * no fim do trecho e o corte fica audível — parece que a música acabou e
    * recomeçou. Cada repetição entra sobreposta, com crossfade na emenda.
    */
-  // A faixa começa em MUSIC_START_SEC; só o que vem depois disso é usado.
-  const offset = Math.min(MUSIC_START_SEC, Math.max(0, buffer.duration - 1));
+  // Faixa já recortada não pula nada; a cheia entra depois da introdução.
+  const preTrimmed = buffer.duration < MUSIC_START_SEC * 3;
+  const offset = preTrimmed
+    ? 0
+    : Math.min(MUSIC_START_SEC, Math.max(0, buffer.duration - 1));
   const clipSec = buffer.duration - offset;
   const crossfade = Math.min(LOOP_CROSSFADE_SEC, clipSec / 4);
   const stride = Math.max(0.5, clipSec - crossfade);
@@ -272,49 +286,86 @@ function createOfflineContext(framesAt48k: number) {
  * não emite bloco nenhum, gerando vídeo mudo sem erro. Aqui o encoder é testado
  * de verdade com alguns quadros de silêncio antes de escolher o caminho.
  */
-async function canEncodeAac(sampleRate: number, numberOfChannels: number) {
+type PcmFormat = "f32-planar" | "f32";
+
+/**
+ * Descobre em qual layout de PCM o encoder AAC deste navegador realmente
+ * funciona.
+ *
+ * Dois motivos pra testar de verdade: `isConfigSupported` responde que suporta
+ * AAC e às vezes não emite bloco nenhum, e nem todo navegador aceita o mesmo
+ * layout de `AudioData` — planar num, intercalado noutro. Errar qualquer um dos
+ * dois dá vídeo mudo sem erro.
+ */
+async function probeAacFormat(
+  sampleRate: number,
+  numberOfChannels: number,
+): Promise<PcmFormat | null> {
   if (typeof AudioEncoder === "undefined" || typeof AudioData === "undefined") {
-    return false;
+    return null;
   }
-  try {
-    let chunks = 0;
-    const encoder = new AudioEncoder({
-      output: () => {
-        chunks += 1;
-      },
-      error: () => {},
-    });
-    encoder.configure({
-      codec: "mp4a.40.2",
-      sampleRate,
-      numberOfChannels,
-      bitrate: AUDIO_BITRATE,
-    });
-    const frames = AUDIO_CHUNK_FRAMES * 4;
-    encoder.encode(
-      new AudioData({
-        format: "f32-planar",
+
+  for (const format of ["f32-planar", "f32"] as PcmFormat[]) {
+    try {
+      let chunks = 0;
+      const encoder = new AudioEncoder({
+        output: () => {
+          chunks += 1;
+        },
+        error: () => {},
+      });
+      encoder.configure({
+        codec: "mp4a.40.2",
         sampleRate,
-        numberOfFrames: frames,
         numberOfChannels,
-        timestamp: 0,
-        data: new Float32Array(numberOfChannels * frames),
-      }),
-    );
-    await encoder.flush();
-    encoder.close();
-    return chunks > 0;
-  } catch {
-    return false;
+        bitrate: AUDIO_BITRATE,
+      });
+      const frames = AUDIO_CHUNK_FRAMES * 4;
+      // Tom de teste em vez de silêncio: alguns encoders descartam blocos mudos.
+      const data = new Float32Array(numberOfChannels * frames);
+      for (let i = 0; i < data.length; i += 1) {
+        data[i] = Math.sin(i * 0.05) * 0.3;
+      }
+      encoder.encode(
+        new AudioData({
+          format,
+          sampleRate,
+          numberOfFrames: frames,
+          numberOfChannels,
+          timestamp: 0,
+          data,
+        }),
+      );
+      await encoder.flush();
+      encoder.close();
+      if (chunks > 0) return format;
+    } catch {
+      // tenta o próximo layout
+    }
   }
+  return null;
 }
 
-/** Fatia planar (canal 0 inteiro, depois canal 1) — formato do AudioData. */
-function planarSlice(buffer: AudioBuffer, start: number, count: number) {
+/** Fatia no layout que o encoder deste navegador aceita. */
+function pcmSlice(
+  buffer: AudioBuffer,
+  start: number,
+  count: number,
+  format: PcmFormat,
+) {
   const channels = buffer.numberOfChannels;
   const out = new Float32Array(channels * count);
+  if (format === "f32-planar") {
+    // canal 0 inteiro, depois canal 1
+    for (let c = 0; c < channels; c += 1) {
+      out.set(buffer.getChannelData(c).subarray(start, start + count), c * count);
+    }
+    return out;
+  }
+  // intercalado: L R L R ...
   for (let c = 0; c < channels; c += 1) {
-    out.set(buffer.getChannelData(c).subarray(start, start + count), c * count);
+    const data = buffer.getChannelData(c);
+    for (let i = 0; i < count; i += 1) out[i * channels + c] = data[start + i];
   }
   return out;
 }
@@ -322,6 +373,7 @@ function planarSlice(buffer: AudioBuffer, start: number, count: number) {
 async function encodeAudioTrack(
   buffer: AudioBuffer,
   muxer: Muxer<ArrayBufferTarget>,
+  format: PcmFormat,
 ) {
   // Erro de encoder chega por callback: guardar e checar depois, porque um
   // throw aqui dentro se perde e o vídeo sairia mudo sem avisar ninguém.
@@ -342,12 +394,12 @@ async function encodeAudioTrack(
   for (let start = 0; start < buffer.length; start += AUDIO_CHUNK_FRAMES) {
     const count = Math.min(AUDIO_CHUNK_FRAMES, buffer.length - start);
     const data = new AudioData({
-      format: "f32-planar",
+      format,
       sampleRate: buffer.sampleRate,
       numberOfFrames: count,
       numberOfChannels: buffer.numberOfChannels,
       timestamp: Math.round((start / buffer.sampleRate) * 1e6),
-      data: planarSlice(buffer, start, count),
+      data: pcmSlice(buffer, start, count, format),
     });
     encoder.encode(data);
     data.close();
@@ -378,7 +430,8 @@ async function createWebCodecsSink(opts: SinkOptions): Promise<FrameSink | null>
 
   // Sem AAC de verdade o vídeo sairia mudo em silêncio; melhor cair no
   // MediaRecorder, que grava o áudio pela via nativa do navegador.
-  if (!(await canEncodeAac(music.sampleRate, music.numberOfChannels))) return null;
+  const pcmFormat = await probeAacFormat(music.sampleRate, music.numberOfChannels);
+  if (!pcmFormat) return null;
 
   const target = new ArrayBufferTarget();
   const muxer = new Muxer({
@@ -416,7 +469,7 @@ async function createWebCodecsSink(opts: SinkOptions): Promise<FrameSink | null>
   return {
     extension: "mp4",
     offline: true,
-    label: `WebCodecs ${codec}`,
+    label: `WebCodecs ${codec} ${pcmFormat}`,
     async addFrame(index: number) {
       if (encoderError) throw encoderError;
       const frame = new VideoFrame(canvas, {
@@ -435,7 +488,7 @@ async function createWebCodecsSink(opts: SinkOptions): Promise<FrameSink | null>
       encoder.close();
       closed = true;
       if (encoderError) throw encoderError;
-      await encodeAudioTrack(music, muxer);
+      await encodeAudioTrack(music, muxer, pcmFormat);
       muxer.finalize();
       return new Blob([target.buffer as ArrayBuffer], { type: "video/mp4" });
     },
@@ -490,8 +543,12 @@ async function createMediaRecorderSink(opts: SinkOptions): Promise<FrameSink> {
   try {
     musicSource = audioCtx.createBufferSource();
     musicSource.buffer = await decodeMusic(audioCtx, musicUrl);
+    const duration = musicSource.buffer.duration;
     musicSource.loop = true;
-    musicSource.loopStart = Math.min(MUSIC_START_SEC, Math.max(0, musicSource.buffer.duration - 1));
+    musicSource.loopStart =
+      duration < MUSIC_START_SEC * 3
+        ? 0
+        : Math.min(MUSIC_START_SEC, Math.max(0, duration - 1));
     musicSource.connect(master);
     musicSource.start(0, musicSource.loopStart);
   } catch (err) {
@@ -590,6 +647,32 @@ async function createMediaRecorderSink(opts: SinkOptions): Promise<FrameSink> {
  * no `stts`) e o **fragmentado** do MediaRecorder (`moof`/`trun`, com o `moov`
  * servindo só de cabeçalho).
  */
+/**
+ * Decodifica o áudio do arquivo e devolve o pico de amplitude (0–1).
+ *
+ * Contar amostras não prova que existe som: uma faixa cheia de zeros, ou
+ * codificada num layout de PCM que o encoder interpretou errado, passa na
+ * contagem e sai muda. Aqui o áudio volta a ser PCM e é medido.
+ */
+export async function measureAudioPeak(blob: Blob): Promise<number | null> {
+  try {
+    const ctx = getSharedAudioContext();
+    const buffer = await ctx.decodeAudioData(await blob.arrayBuffer());
+    let peak = 0;
+    for (let c = 0; c < buffer.numberOfChannels; c += 1) {
+      const data = buffer.getChannelData(c);
+      // Amostrar basta: procurar pico exato em 58s de áudio é desperdício.
+      for (let i = 0; i < data.length; i += 97) {
+        const v = Math.abs(data[i]);
+        if (v > peak) peak = v;
+      }
+    }
+    return peak;
+  } catch {
+    return null;
+  }
+}
+
 export function countAudioSamples(buffer: ArrayBuffer): number | null {
   const view = new DataView(buffer);
 

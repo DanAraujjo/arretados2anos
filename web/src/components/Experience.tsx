@@ -159,6 +159,8 @@ export function Experience({ initialPhotos, photoHint }: Props) {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
 
+    let detecting = false;
+
     const tick = async () => {
       if (cancelled || capturingRef.current) return;
       const video = videoRef.current;
@@ -166,6 +168,13 @@ export function Experience({ initialPhotos, photoHint }: Props) {
         timer = setTimeout(() => void tick(), 250);
         return;
       }
+      // Detecção no celular passa de 300ms; sem essa trava as chamadas
+      // empilhavam e a câmera engasgava logo na primeira captura.
+      if (detecting) {
+        timer = setTimeout(() => void tick(), 120);
+        return;
+      }
+      detecting = true;
 
       try {
         const score = await detectFaceScore(video);
@@ -194,9 +203,11 @@ export function Experience({ initialPhotos, photoHint }: Props) {
         }
       } catch {
         // ignore transient detector errors
+      } finally {
+        detecting = false;
       }
 
-      timer = setTimeout(() => void tick(), 280);
+      timer = setTimeout(() => void tick(), 220);
     };
 
     void tick();
@@ -887,6 +898,13 @@ export function Experience({ initialPhotos, photoHint }: Props) {
                         <img
                           src={match.photo.src}
                           alt={match.photo.name}
+                          /**
+                           * Sem lazy o navegador baixa e decodifica as centenas
+                           * de fotos do álbum (13MP cada) assim que o scan
+                           * termina — era a trava logo depois de achar as fotos.
+                           */
+                          loading="lazy"
+                          decoding="async"
                           className="absolute inset-0 h-full w-full"
                           style={{
                             objectFit: "cover",

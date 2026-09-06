@@ -96,10 +96,17 @@ baixar imagem.
 
 ## Trilha
 
-A faixa é `public/music.mp3`, começando em `MUSIC_START_SEC` (13s) — a
-introdução não serve de trilha. Se a faixa for mais curta que o vídeo, ela
-repete com crossfade de potência constante na emenda; rampa exponencial dos dois
-lados **não** serve, dá silêncio no meio do cruzamento.
+A faixa é `public/music/tema.m4a`, **já recortada** no trecho que entra (0:13,
+64s). `public/music.mp3` (a faixa cheia) e `party.mp3` ficam de fallback, e pra
+esses o `MUSIC_START_SEC` pula a introdução.
+
+O formato do arquivo não muda o resultado — tudo é decodificado pra PCM e sai em
+AAC. O que pesa é a **duração**: decodificar os 4min inteiros gastava ~98MB de
+float no celular, contra ~24MB com o recorte. Era parte da lentidão no Safari.
+
+Se a faixa for mais curta que o vídeo, ela repete com crossfade de potência
+constante na emenda; rampa exponencial dos dois lados **não** serve, dá silêncio
+no meio do cruzamento.
 
 Pra extrair a trilha de um vídeo:
 
@@ -119,12 +126,15 @@ ou faixa vazia no muxer passam batido, e só quem assiste percebe. Por isso:
 - `unlockAudio()` roda na primeira linha do clique, antes de qualquer `await`:
   no iOS o `AudioContext` só libera dentro do gesto do usuário, e a montagem faz
   downloads antes de chegar no som.
-- `canEncodeAac()` testa o encoder de verdade com alguns quadros de silêncio.
-  `isConfigSupported` mente em alguns navegadores: diz que suporta e não emite
-  bloco nenhum.
+- `probeAacFormat()` testa o encoder de verdade com um tom, nos dois layouts de
+  PCM. `isConfigSupported` mente em alguns navegadores: diz que suporta e não
+  emite bloco nenhum. E nem todo navegador aceita o mesmo layout de `AudioData`
+  — planar num, intercalado noutro; errar isso dá faixa muda sem erro.
 - `OfflineAudioContext` tenta 48kHz e cai pra 44.1kHz — Safari antigo recusa
   taxa diferente da do hardware.
-- `countAudioSamples()` confere o arquivo pronto. Se o caminho offline saiu
+- `measureAudioPeak()` decodifica o arquivo pronto e mede o pico: é o que separa
+  "tem faixa" de "tem som". `countAudioSamples()` é o plano B quando o navegador
+  não decodifica a própria saída. Se o caminho offline saiu
   mudo, o vídeo é refeito pelo MediaRecorder. Lida com MP4 comum (`stts`) e com
   o fragmentado do MediaRecorder (`moof`/`trun`) — ler só o `stts` num
   fragmentado dá zero e reporta silêncio que não existe.

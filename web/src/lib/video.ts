@@ -2,6 +2,7 @@ import {
   DEFAULT_MUSIC_URL,
   countAudioSamples,
   createFrameSink,
+  measureAudioPeak,
   yieldToUi,
 } from "@/lib/encode";
 import type { FrameSink, RenderOutput } from "@/lib/encode";
@@ -1359,25 +1360,35 @@ export async function renderAnniversaryVideo({
 
   let { blob, sink } = await attempt(false);
   let audioSamples = await countAudioInBlob(blob);
+  let peak = await measureAudioPeak(blob);
 
   /**
    * Arquivo mudo não levanta erro em lugar nenhum: encoder que falha por
-   * callback ou faixa vazia no muxer passam batido, e só quem assiste percebe.
-   * Confirmado o silêncio, refaz pela via nativa do navegador.
+   * callback, faixa vazia no muxer ou PCM entregue no layout errado passam
+   * batido, e só quem assiste percebe. Confirmado o silêncio, refaz pela via
+   * nativa do navegador.
    */
-  if (sink.extension === "mp4" && sink.offline && audioSamples === 0) {
+  const silent = peak !== null ? peak <= 0.01 : audioSamples === 0;
+  if (sink.offline && silent) {
     onProgress?.(0.3);
     ({ blob, sink } = await attempt(true));
     audioSamples = await countAudioInBlob(blob);
+    peak = await measureAudioPeak(blob);
   }
 
   onProgress?.(1);
+
   const audioNote =
-    audioSamples === null
-      ? "áudio não verificado"
-      : audioSamples > 0
-        ? "áudio ok"
-        : "sem áudio";
+    peak !== null
+      ? peak > 0.01
+        ? `som ok (pico ${peak.toFixed(2)})`
+        : "faixa muda"
+      : audioSamples === null
+        ? "áudio não verificado"
+        : audioSamples > 0
+          ? `${audioSamples} amostras`
+          : "sem faixa de áudio";
+
   return {
     blob,
     extension: sink.extension,
