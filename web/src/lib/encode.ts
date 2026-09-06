@@ -22,6 +22,8 @@ export type FrameSink = {
   offline: boolean;
   /** Curto e legível — vai pro diagnóstico na tela do vídeo. */
   label: string;
+  /** Preenchido em `finish()`: o que aconteceu com a faixa de áudio. */
+  notes?: () => string;
 };
 
 export type RenderOutput = {
@@ -346,6 +348,19 @@ async function probeAacFormat(
   return null;
 }
 
+/** Pico de amplitude de um AudioBuffer (0–1). */
+function peakOf(buffer: AudioBuffer) {
+  let peak = 0;
+  for (let c = 0; c < buffer.numberOfChannels; c += 1) {
+    const data = buffer.getChannelData(c);
+    for (let i = 0; i < data.length; i += 97) {
+      const v = Math.abs(data[i]);
+      if (v > peak) peak = v;
+    }
+  }
+  return peak;
+}
+
 /** Fatia no layout que o encoder deste navegador aceita. */
 function pcmSlice(
   buffer: AudioBuffer,
@@ -370,16 +385,93 @@ function pcmSlice(
   return out;
 }
 
+/** Índices de taxa da tabela do AAC (ISO/IEC 14496-3). */
+const AAC_SAMPLE_RATES = [
+  96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025,
+  8000, 7350,
+];
+
+/**
+ * Monta o AudioSpecificConfig do AAC-LC (2 bytes).
+ *
+ * Sem ele a faixa de áudio do MP4 fica sem `esds` e nenhum player consegue
+ * decodificar: o arquivo tem amostras, passa em qualquer contagem, e sai mudo.
+ * Alguns navegadores não entregam esse `description` no metadado do encoder.
+ */
+function aacDecoderDescription(sampleRate: number, channels: number) {
+  const rateIndex = AAC_SAMPLE_RATES.indexOf(sampleRate);
+  if (rateIndex < 0) return null;
+  const objectType = 2; // AAC-LC
+  return new Uint8Array([
+    (objectType << 3) | (rateIndex >> 1),
+    ((rateIndex & 1) << 7) | (channels << 3),
+  ]);
+}
+
+/** Quadro em ADTS começa com o syncword 0xFFF; no MP4 vai o AAC cru. */
+function stripAdts(data: Uint8Array) {
+  if (data.length < 7 || data[0] !== 0xff || (data[1] & 0xf0) !== 0xf0) {
+    return { data, wasAdts: false };
+  }
+  // Bit "protection absent" ligado = cabeçalho de 7 bytes; senão 9 (com CRC).
+  const headerSize = data[1] & 0x01 ? 7 : 9;
+  return { data: data.subarray(headerSize), wasAdts: true };
+}
+
+type AudioTrackReport = { adts: boolean; synthesizedConfig: boolean };
+
 async function encodeAudioTrack(
   buffer: AudioBuffer,
   muxer: Muxer<ArrayBufferTarget>,
   format: PcmFormat,
-) {
+): Promise<AudioTrackReport> {
+  const report: AudioTrackReport = { adts: false, synthesizedConfig: false };
+
   // Erro de encoder chega por callback: guardar e checar depois, porque um
   // throw aqui dentro se perde e o vídeo sairia mudo sem avisar ninguém.
   let failure: Error | null = null;
+  let configSent = false;
   const encoder = new AudioEncoder({
-    output: (chunk, meta) => muxer.addAudioChunk(chunk, meta),
+    output: (chunk, meta) => {
+      const raw = new Uint8Array(chunk.byteLength);
+      chunk.copyTo(raw);
+      const { data, wasAdts } = stripAdts(raw);
+      if (wasAdts) report.adts = true;
+
+      /**
+       * A configuração do decodificador vem só no primeiro bloco. Se o
+       * navegador não mandar, a faixa fica sem `esds` e nenhum player
+       * decodifica: o arquivo tem amostras e sai mudo.
+       */
+      let outMeta: EncodedAudioChunkMetadata | undefined;
+      if (!configSent) {
+        configSent = true;
+        if (meta?.decoderConfig?.description) {
+          outMeta = meta;
+        } else {
+          const description = aacDecoderDescription(
+            buffer.sampleRate,
+            buffer.numberOfChannels,
+          );
+          if (description) {
+            report.synthesizedConfig = true;
+            outMeta = {
+              decoderConfig: {
+                codec: "mp4a.40.2",
+                sampleRate: buffer.sampleRate,
+                numberOfChannels: buffer.numberOfChannels,
+                description,
+              },
+            };
+          }
+        }
+      }
+
+      // Sem duração declarada, deduz pelo tamanho do quadro AAC.
+      const duration =
+        chunk.duration ?? Math.round((AUDIO_CHUNK_FRAMES / buffer.sampleRate) * 1e6);
+      muxer.addAudioChunkRaw(data, chunk.type, chunk.timestamp, duration, outMeta);
+    },
     error: (err) => {
       failure = err instanceof Error ? err : new Error(String(err));
     },
@@ -409,6 +501,7 @@ async function encodeAudioTrack(
   await encoder.flush();
   encoder.close();
   if (failure) throw failure;
+  return report;
 }
 
 async function createWebCodecsSink(opts: SinkOptions): Promise<FrameSink | null> {
@@ -427,6 +520,7 @@ async function createWebCodecsSink(opts: SinkOptions): Promise<FrameSink | null>
 
   const durationSec = totalFrames / fps;
   const music = await renderMusicOffline(musicUrl, durationSec);
+  const sourcePeak = peakOf(music);
 
   // Sem AAC de verdade o vídeo sairia mudo em silêncio; melhor cair no
   // MediaRecorder, que grava o áudio pela via nativa do navegador.
@@ -465,11 +559,18 @@ async function createWebCodecsSink(opts: SinkOptions): Promise<FrameSink | null>
 
   const frameDurationUs = Math.round(1e6 / fps);
   let closed = false;
+  let audioReport: AudioTrackReport | null = null;
 
   return {
     extension: "mp4",
     offline: true,
     label: `WebCodecs ${codec} ${pcmFormat}`,
+    notes: () => {
+      const parts = [`fonte ${sourcePeak.toFixed(2)}`];
+      if (audioReport?.adts) parts.push("adts removido");
+      if (audioReport?.synthesizedConfig) parts.push("esds sintetizado");
+      return parts.join(" · ");
+    },
     async addFrame(index: number) {
       if (encoderError) throw encoderError;
       const frame = new VideoFrame(canvas, {
@@ -488,7 +589,7 @@ async function createWebCodecsSink(opts: SinkOptions): Promise<FrameSink | null>
       encoder.close();
       closed = true;
       if (encoderError) throw encoderError;
-      await encodeAudioTrack(music, muxer, pcmFormat);
+      audioReport = await encodeAudioTrack(music, muxer, pcmFormat);
       muxer.finalize();
       return new Blob([target.buffer as ArrayBuffer], { type: "video/mp4" });
     },
@@ -764,8 +865,14 @@ export function countAudioSamples(buffer: ArrayBuffer): number | null {
   }
 }
 
+/** `?audio=realtime` pula o WebCodecs — escape sem precisar de novo deploy. */
+function realtimeRequested() {
+  if (typeof location === "undefined") return false;
+  return new URLSearchParams(location.search).get("audio") === "realtime";
+}
+
 export async function createFrameSink(opts: SinkOptions): Promise<FrameSink> {
-  if (!opts.forceRealtime) {
+  if (!opts.forceRealtime && !realtimeRequested()) {
     try {
       const webcodecs = await createWebCodecsSink(opts);
       if (webcodecs) return webcodecs;

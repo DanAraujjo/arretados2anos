@@ -1389,10 +1389,11 @@ export async function renderAnniversaryVideo({
           ? `${audioSamples} amostras`
           : "sem faixa de áudio";
 
+  const notes = sink.notes?.();
   return {
     blob,
     extension: sink.extension,
-    diagnostics: `${sink.label} · ${audioNote}`,
+    diagnostics: [sink.label, notes, audioNote].filter(Boolean).join(" · "),
   };
 }
 

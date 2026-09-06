@@ -139,7 +139,18 @@ ou faixa vazia no muxer passam batido, e só quem assiste percebe. Por isso:
   o fragmentado do MediaRecorder (`moof`/`trun`) — ler só o `stts` num
   fragmentado dá zero e reporta silêncio que não existe.
 
-A tela do vídeo mostra qual caminho foi usado e se o áudio foi verificado.
+- O bloco de áudio é muxado por `addAudioChunkRaw`, com duas defesas: o
+  `AudioSpecificConfig` é sintetizado quando o navegador não manda `description`
+  no primeiro bloco (sem `esds` nenhum player decodifica, e a faixa sai muda), e
+  quadros em ADTS têm o cabeçalho removido — no MP4 vai o AAC cru.
+
+A tela do vídeo mostra qual caminho foi usado, o pico do PCM que entrou no
+encoder (`fonte`) e o que aconteceu com a faixa. Se `fonte` estiver saudável e o
+arquivo mudo, o problema é do encoder/mux; se `fonte 0.00`, quem falhou foi o
+`OfflineAudioContext`.
+
+`?audio=realtime` na URL pula o WebCodecs e grava pelo MediaRecorder — escape
+sem precisar de deploy quando o caminho offline sai mudo num aparelho.
 
 ## Colocar as fotos
 
