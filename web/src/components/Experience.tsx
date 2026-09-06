@@ -76,6 +76,7 @@ export function Experience({ initialPhotos, photoHint }: Props) {
   const [videoExt, setVideoExt] = useState("mp4");
   const [canShareVideo, setCanShareVideo] = useState(false);
   const [videoInfo, setVideoInfo] = useState("");
+  const [realtimeAudio, setRealtimeAudio] = useState(false);
   const [sharing, setSharing] = useState(false);
   const videoFileRef = useRef<File | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -107,6 +108,10 @@ export function Experience({ initialPhotos, photoHint }: Props) {
     let cancelled = false;
 
     async function refreshPhotos() {
+      // Lido aqui e não no corpo do efeito: o parâmetro só existe no cliente.
+      setRealtimeAudio(
+        new URLSearchParams(window.location.search).get("audio") === "realtime",
+      );
       try {
         const res = await fetch(`/api/photos?t=${Date.now()}`, { cache: "no-store" });
         const data = (await res.json()) as {
@@ -622,6 +627,17 @@ export function Experience({ initialPhotos, photoHint }: Props) {
   }
 
   /**
+   * Liga a gravação em tempo real sem recarregar: o app lê o parâmetro da URL
+   * na hora de montar o vídeo, então dá pra trocar sem perder a busca já feita.
+   */
+  function enableRealtimeAudio() {
+    const url = new URL(window.location.href);
+    url.searchParams.set("audio", "realtime");
+    window.history.replaceState(null, "", url);
+    setRealtimeAudio(true);
+  }
+
+  /**
    * Ações da tela do vídeo. No celular vão **abaixo** do player, em duas linhas.
    */
   const videoActions = (
@@ -1039,6 +1055,26 @@ export function Experience({ initialPhotos, photoHint }: Props) {
           </div>
         )}
       </main>
+
+      <footer className="relative z-10 shrink-0 pb-[max(0.4rem,env(safe-area-inset-bottom))] pt-1 text-center">
+        {realtimeAudio ? (
+          <span className="text-[11px] text-gold/70">
+            Áudio real ativo · o vídeo demora mais pra ficar pronto
+          </span>
+        ) : (
+          <a
+            href="?audio=realtime"
+            className="text-[11px] text-foam/45 underline underline-offset-2"
+            onClick={(event) => {
+              // Sem recarregar: a busca já feita continua valendo.
+              event.preventDefault();
+              enableRealtimeAudio();
+            }}
+          >
+            Vídeo sem som? Gerar com áudio real
+          </a>
+        )}
+      </footer>
     </div>
   );
 }

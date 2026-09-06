@@ -160,7 +160,9 @@ padrão é a gravação nativa.
 O custo é gravar em tempo real (~58s em vez de ~10s), e a duração continua
 dentro do teto: medido em 57.970s de vídeo. Pra reavaliar quando o WebKit
 corrigir, abra com `?audio=webcodecs` e confira o pico no diagnóstico.
-`?audio=realtime` força o contrário.
+`?audio=realtime` força o contrário, e o rodapé da página traz esse atalho como
+link — clicar liga o modo **sem recarregar**, então a busca já feita continua
+valendo.
 
 ## Colocar as fotos
 
