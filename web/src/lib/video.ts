@@ -24,6 +24,8 @@ export type VideoClip = {
   image: ClipImage;
   face?: FaceBox;
   key: string;
+  /** Miniatura em cinza 32x32 — base da comparação de fotos parecidas. */
+  signature?: Float32Array;
 };
 
 export type RenderVideoOptions = {
@@ -443,73 +445,88 @@ function drawVolleyCourt(
   ctx.fillText("MURAL ARRETADOS", width * 0.08, height * 0.09);
 }
 
-type PinSlot = {
-  cx: number;
-  cy: number;
-  maxW: number;
-  maxH: number;
-  rot: number;
-};
+/**
+ * Célula da colagem, em fração da área útil (canto superior esquerdo + tamanho).
+ *
+ * Retângulo em vez de centro+tamanho máximo porque as células precisam ser uma
+ * **partição** da área: com centros soltos as fotos se sobrepunham e a de cima
+ * cobria o rosto de quem estava embaixo.
+ */
+type PinSlot = { x: number; y: number; w: number; h: number; rot: number };
 
+/** Respiro entre células, em fração da área. */
+const CELL_GAP = 0.018;
+
+/**
+ * Divide `count` fotos em células que não se cruzam.
+ *
+ * Cada layout parte da área inteira e a corta; o `rot` é pequeno de propósito,
+ * porque o giro cresce a caixa e é o que sobrava por cima da célula vizinha.
+ */
 function collageSlots(count: number, variant: number): PinSlot[] {
-  const presets: PinSlot[][][] = [
-    [
-      [{ cx: 0.5, cy: 0.48, maxW: 0.88, maxH: 0.64, rot: -1.5 }],
-      [{ cx: 0.5, cy: 0.46, maxW: 0.8, maxH: 0.72, rot: 2 }],
-    ],
-    [
-      [
-        { cx: 0.28, cy: 0.42, maxW: 0.52, maxH: 0.56, rot: -3.5 },
-        { cx: 0.72, cy: 0.56, maxW: 0.5, maxH: 0.5, rot: 2.8 },
-      ],
-      [
-        { cx: 0.5, cy: 0.28, maxW: 0.78, maxH: 0.38, rot: -2 },
-        { cx: 0.5, cy: 0.7, maxW: 0.78, maxH: 0.38, rot: 2 },
-      ],
-      [
-        { cx: 0.34, cy: 0.48, maxW: 0.62, maxH: 0.64, rot: -3 },
-        { cx: 0.74, cy: 0.5, maxW: 0.46, maxH: 0.46, rot: 3.5 },
-      ],
-    ],
+  const g = CELL_GAP;
+  const half = (1 - g) / 2;
+
+  const layouts: PinSlot[][][] = [
+    // 1 foto
+    [[{ x: 0, y: 0, w: 1, h: 1, rot: -1.2 }], [{ x: 0, y: 0, w: 1, h: 1, rot: 1.4 }]],
+    // 2 fotos
     [
       [
-        { cx: 0.5, cy: 0.26, maxW: 0.78, maxH: 0.36, rot: -2 },
-        { cx: 0.28, cy: 0.68, maxW: 0.46, maxH: 0.38, rot: 2.2 },
-        { cx: 0.72, cy: 0.68, maxW: 0.46, maxH: 0.38, rot: -2.2 },
+        { x: 0, y: 0, w: 1, h: half, rot: -1.6 },
+        { x: 0, y: half + g, w: 1, h: half, rot: 1.4 },
       ],
       [
-        { cx: 0.3, cy: 0.4, maxW: 0.52, maxH: 0.58, rot: -3 },
-        { cx: 0.74, cy: 0.28, maxW: 0.42, maxH: 0.34, rot: 2.5 },
-        { cx: 0.74, cy: 0.68, maxW: 0.42, maxH: 0.36, rot: -2 },
+        { x: 0, y: 0, w: 1, h: 0.56 - g, rot: -1.2 },
+        { x: 0, y: 0.56, w: 1, h: 0.44, rot: 1.6 },
       ],
       [
-        { cx: 0.26, cy: 0.32, maxW: 0.44, maxH: 0.4, rot: -3 },
-        { cx: 0.7, cy: 0.36, maxW: 0.5, maxH: 0.42, rot: 2 },
-        { cx: 0.5, cy: 0.72, maxW: 0.7, maxH: 0.34, rot: -1.5 },
+        { x: 0, y: 0, w: half, h: 1, rot: -1.8 },
+        { x: half + g, y: 0, w: half, h: 1, rot: 1.5 },
       ],
     ],
+    // 3 fotos
     [
       [
-        { cx: 0.27, cy: 0.3, maxW: 0.48, maxH: 0.38, rot: -3 },
-        { cx: 0.73, cy: 0.28, maxW: 0.44, maxH: 0.34, rot: 2.5 },
-        { cx: 0.3, cy: 0.7, maxW: 0.44, maxH: 0.34, rot: 2 },
-        { cx: 0.72, cy: 0.68, maxW: 0.48, maxH: 0.38, rot: -2.2 },
+        { x: 0, y: 0, w: 1, h: 0.52 - g, rot: -1.4 },
+        { x: 0, y: 0.52, w: half, h: 0.48, rot: 1.6 },
+        { x: half + g, y: 0.52, w: half, h: 0.48, rot: -1.5 },
       ],
       [
-        { cx: 0.36, cy: 0.42, maxW: 0.64, maxH: 0.58, rot: -2 },
-        { cx: 0.82, cy: 0.22, maxW: 0.3, maxH: 0.24, rot: 3 },
-        { cx: 0.82, cy: 0.48, maxW: 0.3, maxH: 0.24, rot: -2 },
-        { cx: 0.82, cy: 0.74, maxW: 0.3, maxH: 0.24, rot: 2.2 },
+        { x: 0, y: 0, w: half, h: 0.5 - g, rot: -1.6 },
+        { x: half + g, y: 0, w: half, h: 0.5 - g, rot: 1.4 },
+        { x: 0, y: 0.5, w: 1, h: 0.5, rot: -1.2 },
       ],
       [
-        { cx: 0.3, cy: 0.26, maxW: 0.52, maxH: 0.34, rot: -3.5 },
-        { cx: 0.7, cy: 0.38, maxW: 0.5, maxH: 0.34, rot: 2.8 },
-        { cx: 0.28, cy: 0.62, maxW: 0.48, maxH: 0.34, rot: 2 },
-        { cx: 0.7, cy: 0.74, maxW: 0.5, maxH: 0.32, rot: -2 },
+        { x: 0, y: 0, w: 0.54 - g, h: 1, rot: -1.5 },
+        { x: 0.54, y: 0, w: 0.46, h: half, rot: 1.6 },
+        { x: 0.54, y: half + g, w: 0.46, h: half, rot: -1.4 },
+      ],
+    ],
+    // 4 fotos
+    [
+      [
+        { x: 0, y: 0, w: half, h: half, rot: -1.6 },
+        { x: half + g, y: 0, w: half, h: half, rot: 1.5 },
+        { x: 0, y: half + g, w: half, h: half, rot: 1.4 },
+        { x: half + g, y: half + g, w: half, h: half, rot: -1.5 },
+      ],
+      [
+        { x: 0, y: 0, w: 1, h: 0.42 - g, rot: -1.3 },
+        { x: 0, y: 0.42, w: 0.33 - g, h: 0.58, rot: 1.5 },
+        { x: 0.335, y: 0.42, w: 0.33 - g, h: 0.58, rot: -1.4 },
+        { x: 0.67, y: 0.42, w: 0.33, h: 0.58, rot: 1.6 },
+      ],
+      [
+        { x: 0, y: 0, w: 0.6 - g, h: 1, rot: -1.4 },
+        { x: 0.6, y: 0, w: 0.4, h: 0.33 - g, rot: 1.5 },
+        { x: 0.6, y: 0.335, w: 0.4, h: 0.33 - g, rot: -1.5 },
+        { x: 0.6, y: 0.67, w: 0.4, h: 0.33, rot: 1.3 },
       ],
     ],
   ];
-  const forCount = presets[clamp(count, 1, 4) - 1];
+
+  const forCount = layouts[clamp(count, 1, 4) - 1];
   return forCount[variant % forCount.length];
 }
 
@@ -748,33 +765,33 @@ function drawPhotoLayer(
     const slot = slots[i];
     const clip = group[i];
     const motion = shot.motions[i] ?? MOTION_CYCLE[i % MOTION_CYCLE.length];
+    const cellW = slot.w * areaW;
+    const cellH = slot.h * areaH;
+
+    /**
+     * A foto é dimensionada pelo que sobra da célula **depois** de descontar a
+     * moldura polaroid e o crescimento do giro. Assim a caixa girada cabe
+     * inteira na célula, e como as células não se cruzam, nenhuma foto cobre a
+     * outra — antes a de cima escondia o rosto de quem estava embaixo.
+     */
+    const rad = ((Math.abs(slot.rot) + 1) * Math.PI) / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    // pad ≈ 4% do menor lado, e a aba de baixo vale 3.4 pads no total.
+    const padRatio = 0.04;
+    const growW = (1 + 2 * padRatio) * cos + (1 + 3.4 * padRatio) * sin;
+    const growH = (1 + 2 * padRatio) * sin + (1 + 3.4 * padRatio) * cos;
+
     const { w, h, landscape } = frameSizeForPhoto(
       clip.image,
-      slot.maxW * areaW * SLOT_SAFETY,
-      slot.maxH * areaH * SLOT_SAFETY,
+      (cellW / growW) * SLOT_SAFETY,
+      (cellH / growH) * SLOT_SAFETY,
     );
 
-    // A moldura polaroid e o giro passam da caixa da foto: o footprint girado
-    // é o que precisa caber na área útil, senão a colagem invade a arte.
-    const pad = Math.min(w, h) * 0.04;
-    const boxW = w + pad * 2;
-    const boxH = h + pad * 3.4;
-    const rad = ((Math.abs(slot.rot) + 2) * Math.PI) / 180;
-    const footW = boxW * Math.cos(rad) + boxH * Math.sin(rad);
-    const footH = boxW * Math.sin(rad) + boxH * Math.cos(rad);
-
-    const cx =
-      footW >= areaW
-        ? areaX + areaW / 2
-        : clamp(areaX + slot.cx * areaW, areaX + footW / 2, areaX + areaW - footW / 2);
-    const cy =
-      footH >= areaH
-        ? areaY + areaH / 2
-        : clamp(areaY + slot.cy * areaH, areaY + footH / 2, areaY + areaH - footH / 2);
-
-    // A aba branca de baixo é maior que a de cima — sobe um pouco pra centrar.
-    const x = cx - w / 2;
-    const y = cy - h / 2 - pad * 0.7;
+    const pad = Math.min(w, h) * padRatio;
+    // Centro da célula, com a aba branca de baixo compensada.
+    const x = areaX + slot.x * areaW + (cellW - w) / 2;
+    const y = areaY + slot.y * areaH + (cellH - h) / 2 - pad * 0.7;
 
     const enter = easeOutCubic(clamp((t / enterWindow - i * stagger) / appearDur, 0, 1));
     if (enter <= 0.01) continue;
@@ -1080,6 +1097,7 @@ export async function prepareClips(
   const maxSide = options.maxSide ?? CLIP_MAX_SIDE;
   const concurrency = options.concurrency ?? 3;
   const scratch = document.createElement("canvas");
+  const signatureCanvas = document.createElement("canvas");
 
   const prepared = await mapPool<
     { key: string; src: string; face?: FaceBox },
@@ -1092,7 +1110,12 @@ export async function prepareClips(
         const res = await fetch(item.src, { mode: "cors", cache: "force-cache" });
         if (!res.ok) return null;
         const image = await decodeScaled(await res.blob(), maxSide, scratch);
-        return { image, face: item.face, key: item.key } satisfies VideoClip;
+        return {
+          image,
+          face: item.face,
+          key: item.key,
+          signature: imageSignature(image, signatureCanvas),
+        } satisfies VideoClip;
       } catch {
         return null;
       }
@@ -1101,6 +1124,84 @@ export async function prepareClips(
   );
 
   return prepared.filter((clip): clip is VideoClip => clip !== null);
+}
+
+const SIGNATURE_SIDE = 32;
+
+/**
+ * Assinatura visual: a foto reduzida a 32x32 em tons de cinza.
+ *
+ * Sai de graça — a imagem já está decodificada aqui — e é o bastante pra
+ * reconhecer duas fotos da mesma cena, que é o que o olho lê como repetida.
+ */
+function imageSignature(image: ClipImage, scratch: HTMLCanvasElement) {
+  scratch.width = SIGNATURE_SIDE;
+  scratch.height = SIGNATURE_SIDE;
+  const ctx = scratch.getContext("2d", { alpha: false, willReadFrequently: true });
+  if (!ctx) return undefined;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "low";
+  ctx.drawImage(image.source, 0, 0, SIGNATURE_SIDE, SIGNATURE_SIDE);
+
+  const { data } = ctx.getImageData(0, 0, SIGNATURE_SIDE, SIGNATURE_SIDE);
+  const out = new Float32Array(SIGNATURE_SIDE * SIGNATURE_SIDE);
+  for (let i = 0; i < out.length; i += 1) {
+    const p = i * 4;
+    out[i] = data[p] * 0.299 + data[p + 1] * 0.587 + data[p + 2] * 0.114;
+  }
+
+  /**
+   * Normaliza pra média 0 e desvio 1. Sem isso o brilho domina a conta: duas
+   * fotos da mesma cena com exposições diferentes ficavam tão distantes quanto
+   * duas cenas distintas.
+   */
+  let mean = 0;
+  for (const v of out) mean += v;
+  mean /= out.length;
+  let sd = 0;
+  for (const v of out) sd += (v - mean) ** 2;
+  sd = Math.sqrt(sd / out.length) || 1;
+  for (let i = 0; i < out.length; i += 1) out[i] = (out[i] - mean) / sd;
+
+  return out;
+}
+
+/** 0 = mesma imagem, 1 = sem relação. Correlação entre assinaturas. */
+function signatureDistance(a: Float32Array, b: Float32Array) {
+  let dot = 0;
+  for (let i = 0; i < a.length; i += 1) dot += a[i] * b[i];
+  return 1 - dot / a.length;
+}
+
+/**
+ * Limiar calibrado no álbum, comparando rajadas (mesma cena garantida) com
+ * pares aleatórios: em 0.35 pega 60% das repetidas sem descartar **nenhuma**
+ * foto distinta. Subir daqui começa a jogar fora foto boa.
+ */
+const SIMILAR_MAX_DISTANCE = 0.35;
+
+/**
+ * Descarta fotos visualmente parecidas, mantendo a primeira de cada grupo.
+ *
+ * A limpeza por horário do arquivo pega a rajada de câmera, mas não a mesma
+ * cena fotografada com alguns segundos de diferença — e no vídeo essas leem
+ * como foto repetida. `clips` já deve vir na ordem de preferência.
+ */
+export function dropSimilarClips(clips: VideoClip[]): VideoClip[] {
+  const kept: VideoClip[] = [];
+  for (const clip of clips) {
+    if (!clip.signature) {
+      kept.push(clip);
+      continue;
+    }
+    const duplicate = kept.some(
+      (other) =>
+        other.signature &&
+        signatureDistance(clip.signature!, other.signature) <= SIMILAR_MAX_DISTANCE,
+    );
+    if (!duplicate) kept.push(clip);
+  }
+  return kept;
 }
 
 /** Libera os ImageBitmap do render (senão ficam presos até o GC). */

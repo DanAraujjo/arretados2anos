@@ -34,6 +34,7 @@ import { zipPhotos } from "@/lib/zip";
 import type { AppStep, MatchResult, PhotoItem } from "@/lib/types";
 import {
   MAX_VIDEO_SEC,
+  dropSimilarClips,
   prepareClips,
   releaseClips,
   renderAnniversaryVideo,
@@ -592,10 +593,14 @@ export function Experience({ initialPhotos, photoHint }: Props) {
         throw new Error("Não consegui carregar as fotos selecionadas.");
       }
 
+      // Rajada some pelo horário do arquivo; a mesma cena tirada com alguns
+      // segundos de diferença só dá pra pegar comparando as imagens.
+      const unrepeated = dropSimilarClips(clips);
+
       setRenderLabel("Montando retrospectiva...");
       try {
         const { blob, extension, diagnostics } = await renderAnniversaryVideo({
-          clips,
+          clips: unrepeated,
           durationSec: MAX_VIDEO_SEC,
           onProgress: (ratio) => setRenderProgress(0.2 + ratio * 0.8),
         });
@@ -619,6 +624,7 @@ export function Experience({ initialPhotos, photoHint }: Props) {
         console.info(`[arretados] vídeo: ${diagnostics}`);
         setStep("video");
       } finally {
+        // Libera tudo que foi preparado, inclusive o que a limpeza descartou.
         releaseClips(clips);
       }
     } catch (err) {

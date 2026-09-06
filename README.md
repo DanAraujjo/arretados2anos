@@ -89,10 +89,24 @@ O texto de encerramento é `OUTRO_LINES`. `OUTRO_SEC` tem que ser bem maior que
 `FADE_OUT_SEC`: com os dois próximos, a mensagem nasce dentro do fade e ninguém
 consegue ler.
 
-Boa parte do álbum é rajada de câmera (há 25 arquivos com o mesmo segundo no
-nome). No vídeo isso lê como "a mesma foto repetindo", então
-`dropBurstDuplicates` mantém uma foto por rajada — pelo nome do arquivo, sem
-baixar imagem.
+As células da colagem são uma **partição** da área: `collageSlots` devolve
+retângulos que não se cruzam, e a foto é dimensionada pelo que sobra da célula
+depois de descontar a moldura e o crescimento do giro. Com centros soltos as
+fotos se sobrepunham e a de cima cobria o rosto de quem estava embaixo.
+
+Foto repetida é atacada em duas frentes:
+
+- `dropBurstDuplicates` (nome do arquivo) mata a rajada de câmera — o álbum tem
+  grupos de até 25 arquivos no mesmo segundo. Não baixa imagem nenhuma.
+- `dropSimilarClips` (imagem) mata a mesma cena tirada com alguns segundos de
+  diferença, que o horário não pega. Usa a foto reduzida a 32x32 em cinza e
+  **normalizada** — sem normalizar, o brilho domina e duas exposições da mesma
+  cena ficam tão distantes quanto cenas distintas. Sai de graça: a imagem já
+  está decodificada no `prepareClips`.
+
+O limiar de 0.35 foi calibrado no álbum comparando rajadas (mesma cena
+garantida) com pares aleatórios: pega 60% das repetidas sem descartar nenhuma
+foto distinta. Subir daqui começa a jogar fora foto boa.
 
 ## Trilha
 
