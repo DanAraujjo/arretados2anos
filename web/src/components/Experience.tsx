@@ -48,6 +48,7 @@ type Props = {
 /** Frames da câmera fundidos numa query — cobre piscada, contraluz e ângulo. */
 const SELFIE_FRAMES = 4;
 
+
 /** Cópia leve do frame atual do vídeo (o detector reduz pra 416 de qualquer jeito). */
 function grabFrame(video: HTMLVideoElement, maxSide = 640): HTMLCanvasElement {
   const vw = video.videoWidth || 720;
@@ -71,7 +72,6 @@ export function Experience({ initialPhotos, photoHint }: Props) {
   const [matches, setMatches] = useState<MatchResult[]>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [scanProgress, setScanProgress] = useState(0);
-  const [scanLabel, setScanLabel] = useState("Preparando...");
   const [renderProgress, setRenderProgress] = useState(0);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [videoExt, setVideoExt] = useState("mp4");
@@ -91,7 +91,6 @@ export function Experience({ initialPhotos, photoHint }: Props) {
     count: number;
     savedAt: number;
   } | null>(null);
-  const [cacheHits, setCacheHits] = useState(0);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -227,8 +226,6 @@ export function Experience({ initialPhotos, photoHint }: Props) {
     setStep("scanning");
     setScanProgress(0);
     setMatches([]);
-    setCacheHits(0);
-    const started = performance.now();
 
     try {
       if (photos.length === 0) {
@@ -238,18 +235,16 @@ export function Experience({ initialPhotos, photoHint }: Props) {
         );
       }
 
-      setScanLabel("Carregando reconhecimento...");
       setScanProgress(0.05);
 
       // O modelo tem 3.5MB e o runtime 13MB: sem barra andando isso parecia
       // travamento logo depois de detectar o rosto.
       const stopWatching = onArcFaceProgress((ratio) => {
         setScanProgress(0.05 + ratio * 0.1);
-        if (ratio < 1) setScanLabel(`Carregando reconhecimento · ${Math.round(ratio * 100)}%`);
       });
 
-      // Paraleliza selfie + índice + modelo. O ArcFace tem ~12MB: no 4G isso
-      // demora, e sem rótulo próprio parecia que o app tinha travado.
+      // Paraleliza selfie + índice + modelo. O modelo tem alguns MB: sem contar
+      // esse download na barra, parecia que o app tinha travado.
       let selfie: HTMLImageElement;
       let faceIndex: Awaited<ReturnType<typeof loadFaceIndex>>;
       try {
@@ -262,7 +257,6 @@ export function Experience({ initialPhotos, photoHint }: Props) {
         stopWatching();
       }
       setScanProgress(0.15);
-      setScanLabel("Lendo seu rosto...");
 
       // Vários frames + versão espelhada = descritor bem mais estável
       const query = await buildFaceQuery(frames.length > 0 ? frames : [selfie]);
@@ -272,11 +266,9 @@ export function Experience({ initialPhotos, photoHint }: Props) {
       setScanProgress(0.25);
 
       let found: MatchResult[] = [];
-      let hits = 0;
 
       if (faceIndex && faceIndex.count > 0) {
         // Caminho rápido online: só compara vetores (~1s), sem baixar 400MB
-        setScanLabel(`Comparando · ${faceIndex.count} fotos`);
         const run = matchQueryAgainstIndex(
           query,
           photos,
@@ -285,13 +277,9 @@ export function Experience({ initialPhotos, photoHint }: Props) {
         );
         found = run.matches;
         if (run.query.expanded > 0) {
-          setScanLabel(`Refinado com ${run.query.expanded} fotos suas`);
         }
-        hits = faceIndex.count;
-        setCacheHits(hits);
       } else {
         // Fallback local (sem faces.json): paralelo, mas bem mais lento
-        setScanLabel("Índice ausente · analisando fotos...");
         const cores = typeof navigator !== "undefined" ? navigator.hardwareConcurrency || 4 : 4;
         const concurrency = Math.min(6, Math.max(3, Math.floor(cores / 2)));
 
@@ -302,8 +290,6 @@ export function Experience({ initialPhotos, photoHint }: Props) {
             try {
               let faces = await getPhotoFaces(photo.id);
               if (faces) {
-                hits += 1;
-                setCacheHits(hits);
               } else {
                 const img = await loadImage(photo.src);
                 faces = await getAlbumFaces(img);
@@ -326,7 +312,6 @@ export function Experience({ initialPhotos, photoHint }: Props) {
           },
           (done, total) => {
             setScanProgress(0.25 + (done / total) * 0.7);
-            setScanLabel(`Analisando · ${done}/${total}`);
           },
         );
         found = rows.filter((row): row is MatchResult => row !== null);
@@ -334,13 +319,10 @@ export function Experience({ initialPhotos, photoHint }: Props) {
       }
 
       setScanProgress(0.98);
-      const elapsed = ((performance.now() - started) / 1000).toFixed(1);
-      setScanLabel(`Pronto em ${elapsed}s`);
 
       const nextSelected = found.slice(0, 24).map((m) => m.photo.id);
       setMatches(found);
       setSelectedIds(nextSelected);
-      setCacheHits(hits);
 
       const selfieBlob = await blobFromObjectUrl(url);
       if (selfieBlob) {
@@ -633,6 +615,9 @@ export function Experience({ initialPhotos, photoHint }: Props) {
     }
   }
 
+
+
+
   /**
    * Liga a gravação em tempo real sem recarregar: o app lê o parâmetro da URL
    * na hora de montar o vídeo, então dá pra trocar sem perder a busca já feita.
@@ -738,6 +723,7 @@ export function Experience({ initialPhotos, photoHint }: Props) {
     </>
   );
 
+
   return (
     <div className="relative flex h-dvh max-h-dvh flex-col overflow-hidden bg-navy text-foam">
       <div className="pointer-events-none absolute inset-0">
@@ -776,9 +762,6 @@ export function Experience({ initialPhotos, photoHint }: Props) {
               <p className="font-[family-name:var(--font-display)] text-[3.2rem] leading-none text-foam sm:text-6xl">
                 2 ANOS
               </p>
-              <p className="mx-auto max-w-md text-base leading-snug text-foam/75 sm:text-lg">
-                Selfie → suas fotos → vídeo da celebração
-              </p>
             </div>
             <button
               type="button"
@@ -801,13 +784,11 @@ export function Experience({ initialPhotos, photoHint }: Props) {
                 Continuar última busca ({savedSession.count} fotos)
               </button>
             )}
-            <p className="text-sm text-foam/55 sm:text-base">
-              {photosLoading
-                ? "Carregando álbum..."
-                : photos.length > 0
-                  ? `${photos.length} fotos no álbum${savedSession ? " · cache pronto" : ""}`
-                  : "Álbum vazio — configure R2 ou public/photos"}
-            </p>
+            {!photosLoading && photos.length === 0 && (
+              <p className="text-sm text-foam/55 sm:text-base">
+                Álbum vazio — configure R2 ou public/photos
+              </p>
+            )}
           </section>
         )}
 
@@ -901,7 +882,6 @@ export function Experience({ initialPhotos, photoHint }: Props) {
             <h2 className="font-[family-name:var(--font-display)] text-3xl text-sand sm:text-5xl">
               Procurando você...
             </h2>
-            <p className="max-w-full truncate px-2 text-base text-foam/65 sm:text-lg">{scanLabel}</p>
             <div className="h-3 w-full overflow-hidden rounded-full bg-ink/60">
               <div
                 className="h-full rounded-full bg-gradient-to-r from-ocean to-gold transition-all duration-300"
@@ -910,7 +890,6 @@ export function Experience({ initialPhotos, photoHint }: Props) {
             </div>
             <p className="text-lg font-semibold text-foam/70 sm:text-xl">
               {Math.round(scanProgress * 100)}%
-              {cacheHits > 0 ? ` · ${cacheHits} do cache` : ""}
             </p>
           </section>
         )}

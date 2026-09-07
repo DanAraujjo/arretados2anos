@@ -18,7 +18,7 @@ Abra [http://localhost:3000](http://localhost:3000).
    (mais a versão espelhada) num embedding só, bem mais estável que uma foto.
 2. **Match** — compara contra `public/photos/faces.bin`, um índice pré-calculado
    com os embeddings de todos os rostos do álbum. Nenhuma foto é baixada: o scan
-   é só distância entre vetores, ~40ms pra 890 fotos.
+   é só distância entre vetores, poucas dezenas de ms pro álbum inteiro.
 3. **Vídeo** — colagem animada sobre a arte `public/bg-arretados.jpg`, exportada
    em MP4 (H.264 + AAC) 1080x1920, exatamente 58s, com fade final. No celular o
    botão "Compartilhar" abre a folha nativa (Web Share nível 2) com o arquivo;
@@ -54,7 +54,7 @@ npm run faces:index
 Varre a imagem inteira **e** ladrilhos 2x2 com sobreposição (é onde o rosto do
 fundo em foto de grupo aparece grande o suficiente), descarta detecção fraca —
 abaixo de 0.65 de confiança o que aparece é ombro, mão e areia — e grava os
-embeddings quantizados em int8. Usa vários processos: ~3min pra 890 fotos.
+embeddings quantizados em int8. Usa vários processos: ~2min pra ~500 fotos.
 
 Subir `FACE_INDEX_VERSION` no script invalida os índices antigos. Obrigatório ao
 trocar de modelo: comparar vetores de modelos diferentes devolve lixo com cara

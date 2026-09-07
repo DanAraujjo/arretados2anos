@@ -344,7 +344,18 @@ function drawArtCard(
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
 
-  const sizes = headline.map((line) => Math.floor(width * line.size));
+  /**
+   * Encolhe a linha que não couber. Os tamanhos são fração da largura, então
+   * uma frase mais longa estourava a tela — a métrica da fonte é quem decide.
+   */
+  const maxWidth = PHOTO_AREA.width * width * 0.94;
+  const sizes = headline.map((line) => {
+    let size = Math.floor(width * line.size);
+    ctx.font = `700 ${size}px Bebas Neue, Impact, Apple Color Emoji, Segoe UI Emoji, Noto Color Emoji, sans-serif`;
+    const measured = ctx.measureText(line.text).width;
+    if (measured > maxWidth) size = Math.floor(size * (maxWidth / measured));
+    return size;
+  });
   const totalHeight = sizes.reduce((a, size) => a + size * lineGap, 0);
   let y = -totalHeight / 2 + (sizes[0] * lineGap) / 2;
 
@@ -867,20 +878,19 @@ const OUTRO_SEC = 5;
 export function planGroupSizes(photoCount: number, bodySec: number): number[] {
   const n = Math.max(1, photoCount);
   const minSlideSec = 2.15;
-  const maxSlideSec = MAX_SLIDE_SEC;
   const minSlides = Math.ceil(n / 4);
   const maxSlides = Math.min(n, Math.max(minSlides, Math.floor(bodySec / minSlideSec)));
 
-  // Alvo: ~2.7–3.1 fotos/slide → 40 fotos ≈ 13–15 slides
-  let slides = Math.round(n / 2.9);
-  slides = clamp(slides, minSlides, maxSlides);
-
-  // Se o slide ficaria longo demais, abre mais — mas evita “1 foto por slide” em álbum pequeno
-  if (bodySec / slides > maxSlideSec && slides < maxSlides) {
-    const byTime = Math.ceil(bodySec / maxSlideSec);
-    const pairCap = Math.max(minSlides, Math.ceil(n / 2));
-    slides = Math.min(maxSlides, Math.max(slides, Math.min(byTime, pairCap)));
-  }
+  /**
+   * O nº de slides sai do **tempo disponível**, não da quantidade de fotos.
+   *
+   * Antes ele vinha de `fotos / 2.9`, e com álbum enxuto (a limpeza de
+   * repetidas corta bastante) sobravam poucos slides: o vídeo fechava em 30s
+   * mesmo tendo tempo e foto. Agora as fotos se espalham em mais slides até
+   * preencher os 58s, e só encurta quando nem uma foto por slide dá conta.
+   */
+  const targetSlideSec = 3.8;
+  const slides = clamp(Math.round(bodySec / targetSlideSec), minSlides, maxSlides);
 
   const sizes: number[] = [];
   let left = n;
